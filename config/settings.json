@@ -1,0 +1,63 @@
+{
+  "model": {
+    "provider": "heuristic",
+    "model_name": "",
+    "api_key": "",
+    "api_key_env": "",
+    "base_url": "",
+    "temperature": 0.3,
+    "max_tokens": 1024,
+    "timeout_seconds": 30,
+    "max_retries": 2
+  },
+  "platform": {
+    "max_cycles": 50,
+    "timeout_seconds": 300,
+    "enable_auto_submit": true
+  },
+  "dual_path": {
+    "structured_path_weight": 0.7,
+    "free_exploration_weight": 0.3,
+    "max_exploration_attempts": 5,
+    "exploration_budget_per_project": 3,
+    "enable_pattern_discovery": true,
+    "pattern_discovery_threshold": 3,
+    "enable_semantic_retrieval": true,
+    "semantic_retrieval_limit": 5,
+    "hybrid_score_alpha": 0.7,
+    "hybrid_score_beta": 0.3
+  },
+  "pattern_discovery": {
+    "enable": true,
+    "threshold": 3,
+    "auto_apply": false
+  },
+  "semantic_retrieval": {
+    "enable": true,
+    "limit": 5,
+    "hybrid_alpha": 0.7,
+    "hybrid_beta": 0.3,
+    "vector_store": {
+      "type": "memory",
+      "embedding_model": "sentence-transformers/all-MiniLM-L6-v2"
+    }
+  },
+  "security": {
+    "allowed_hostpatterns": ["127.0.0.1", "localhost"],
+    "max_http_requests": 30,
+    "max_sandbox_executions": 5,
+    "max_program_steps": 15,
+    "require_observation_before_action": true,
+    "max_estimated_cost": 50.0
+  },
+  "memory": {
+    "persistence_enabled": true,
+    "store_path": "data/episodes.json",
+    "max_entries": 10000
+  },
+  "logging": {
+    "level": "INFO",
+    "enable_event_logging": true,
+    "enable_performance_logging": false
+  }
+}

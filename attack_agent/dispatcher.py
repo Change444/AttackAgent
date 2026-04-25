@@ -5,6 +5,7 @@ from .platform_models import Event, EventType, ProjectStage
 from .runtime import WorkerPool, WorkerRuntime
 from .state_graph import StateGraphService
 from .strategy import StrategyLayer
+from .constraints import LightweightSecurityShell, SecurityConstraints
 
 
 class Dispatcher:
@@ -13,6 +14,17 @@ class Dispatcher:
         self.runtime = runtime
         self.strategy = strategy
         self.worker_pool = worker_pool or WorkerPool()
+        # 添加轻量级安全壳
+        self.security_shell = LightweightSecurityShell(
+            SecurityConstraints(
+                allowed_hostpatterns=["127.0.0.1", "localhost"],
+                max_http_requests=30,
+                max_sandbox_executions=5,
+                max_program_steps=15,
+                require_observation_before_action=True,
+                max_estimated_cost=50.0
+            )
+        )
 
     def schedule(self, project_id: str) -> None:
         record = self.state_graph.projects[project_id]
@@ -33,6 +45,36 @@ class Dispatcher:
         worker = self.assign_worker(project_id)
         visible_primitives = self.runtime.registry.visible_primitives(program.required_profile)
         bundle = self.strategy.task_compiler.compile_bundle(record, program, program.required_profile, visible_primitives, memory_hits)
+
+        # 安全壳验证（轻量级，快速）
+        validation = self.security_shell.validate(bundle)
+
+        # 记录验证事件（不阻断warning级别的违规）
+        if validation.violations:
+            violation_payload = [
+                {
+                    "type": v.constraint_type,
+                    "severity": v.severity,
+                    "message": v.message
+                }
+                for v in validation.violations
+            ]
+            self.state_graph.append_event(Event(
+                type=EventType.SECURITY_VALIDATION,
+                project_id=project_id,
+                run_id=bundle.run_id,
+                payload={
+                    "allowed": validation.allowed,
+                    "violations": violation_payload,
+                    "program_id": program.id
+                },
+                source="security_shell"
+            ))
+
+        # 只有critical级别的违规才阻止执行
+        if not validation.allowed:
+            return  # 静默阻止，记录已通过事件系统
+
         events, outcome = self.runtime.run_task(bundle)
         self.heartbeat(worker.worker_id)
         self.state_graph.record_program(project_id, program, outcome)

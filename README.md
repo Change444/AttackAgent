@@ -21,10 +21,8 @@ python -m attack_agent.platform_demo
 
 When context is running out, resume from these files instead of relying on old chat history:
 
-- [Current State](docs/CURRENT_STATE.md)
-- [Architecture](docs/ARCHITECTURE.md)
-- [Next Steps](docs/NEXT_STEPS.md)
-- [Handoff Template](docs/HANDOFF_TEMPLATE.md)
+- [Architecture](docs/ARCHITECTURE.md) - 完整的项目架构文档（唯一真实源）
+- [Work Instructions](docs/WORK_INSTRUCTIONS.md) - 开发工作指令
 
 ## Canonical path
 

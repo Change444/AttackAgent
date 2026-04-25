@@ -63,7 +63,7 @@ class SubmitClassifier:
 
 
 class StrategyLayer:
-    def __init__(self, planner: APGPlanner) -> None:
+    def __init__(self, planner) -> None:
         self.planner = planner
         self.task_compiler = TaskPromptCompiler()
         self.compressor = StateCompressor()

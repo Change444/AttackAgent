@@ -1,23 +1,57 @@
 from __future__ import annotations
 
 from .apg import APGPlanner
+from .constraint_aware_reasoner import ConstraintAwareReasoner, ConstraintContextBuilder
+from .constraints import LightweightSecurityShell, SecurityConstraints
 from .controller import Controller
 from .dispatcher import Dispatcher
-from .platform_models import PatternNodeKind, ProjectStage
+from .dynamic_pattern_composer import DynamicPatternComposer
+from .enhanced_apg import EnhancedAPGPlanner
+from .platform_models import DualPathConfig, PatternNodeKind, ProjectStage
 from .provider import CompetitionProvider
-from .reasoning import HeuristicReasoner
+from .reasoning import HeuristicReasoner, LLMReasoner, ReasoningModel
+from .semantic_retrieval import SemanticRetrievalEngine
 from .runtime import WorkerRuntime
 from .state_graph import StateGraphService
 from .strategy import StrategyLayer
 
 
 class CompetitionPlatform:
-    def __init__(self, provider: CompetitionProvider, reasoner: HeuristicReasoner | None = None) -> None:
+    def __init__(self, provider: CompetitionProvider,
+                 reasoner: HeuristicReasoner | None = None,
+                 model: ReasoningModel | None = None,
+                 config: DualPathConfig | None = None) -> None:
         self.provider = provider
         self.state_graph = StateGraphService()
         self.controller = Controller(provider, self.state_graph)
         self.runtime = WorkerRuntime()
-        self.strategy = StrategyLayer(APGPlanner(self.state_graph.episode_memory, reasoner=reasoner))
+
+        if model is not None:
+            llm_reasoner = LLMReasoner(model)
+            security_constraints = SecurityConstraints(
+                max_program_steps=15,
+                require_observation_before_action=True,
+                max_estimated_cost=50.0,
+            )
+            shell = LightweightSecurityShell(security_constraints)
+            builder = ConstraintContextBuilder(security_constraints)
+            constraint_reasoner = ConstraintAwareReasoner(model, builder, shell)
+            semantic = SemanticRetrievalEngine()
+            composer = DynamicPatternComposer()
+            dual_config = config or DualPathConfig()
+            structured = APGPlanner(self.state_graph.episode_memory, reasoner=llm_reasoner)
+            enhanced = EnhancedAPGPlanner(
+                structured_planner=structured,
+                free_exploration_planner=constraint_reasoner,
+                semantic_retrieval=semantic,
+                pattern_composer=composer,
+                config=dual_config,
+            )
+            self.strategy = StrategyLayer(enhanced)
+        else:
+            heuristic = reasoner or HeuristicReasoner()
+            self.strategy = StrategyLayer(APGPlanner(self.state_graph.episode_memory, reasoner=heuristic))
+
         self.dispatcher = Dispatcher(self.state_graph, self.runtime, self.strategy)
 
     def bootstrap(self) -> list[str]:

@@ -25,6 +25,12 @@ class WorkerProfile(str, Enum):
     HYBRID = "hybrid"
 
 
+class PathType(str, Enum):
+    STRUCTURED = "structured"
+    FREE_EXPLORATION = "free_exploration"
+    HYBRID = "hybrid"
+
+
 class EventType(str, Enum):
     PROJECT_UPSERTED = "project_upserted"
     INSTANCE_STARTED = "instance_started"
@@ -44,6 +50,11 @@ class EventType(str, Enum):
     MEMORY_STORED = "memory_stored"
     PROJECT_DONE = "project_done"
     PROJECT_ABANDONED = "project_abandoned"
+    SECURITY_VALIDATION = "security_validation"
+    PATH_SELECTION = "path_selection"
+    PATTERN_DISCOVERED = "pattern_discovered"
+    SEMANTIC_RETRIEVAL = "semantic_retrieval"
+    FREE_EXPLORATION_PLAN = "free_exploration_plan"
 
 
 class PatternNodeKind(str, Enum):
@@ -268,3 +279,30 @@ class WorkerLease:
     project_id: str | None = None
     healthy: bool = True
     last_seen_at: Any = field(default_factory=utc_now)
+
+
+@dataclass(slots=True)
+class PlanningContext:
+    """规划上下文"""
+    record: Any
+    attempt_count: int
+    historical_success_rate: float
+    complexity_score: float
+    pattern_confidence: float
+    exploration_budget: int
+    current_path: PathType = PathType.STRUCTURED
+
+
+@dataclass(slots=True)
+class DualPathConfig:
+    """双路径配置"""
+    structured_path_weight: float = 0.7
+    free_exploration_weight: float = 0.3
+    max_exploration_attempts: int = 5
+    exploration_budget_per_project: int = 3
+    enable_pattern_discovery: bool = True
+    pattern_discovery_threshold: int = 3
+    enable_semantic_retrieval: bool = True
+    semantic_retrieval_limit: int = 5
+    hybrid_score_alpha: float = 0.7
+    hybrid_score_beta: float = 0.3
