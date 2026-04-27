@@ -251,12 +251,25 @@ class CodeSandbox:
         "zip": zip,
         "any": any,
         "all": all,
+        "abs": abs,
+        "isinstance": isinstance,
+        "ValueError": ValueError,
+        "TypeError": TypeError,
+        "KeyError": KeyError,
+        "IndexError": IndexError,
+        "AttributeError": AttributeError,
+        "RuntimeError": RuntimeError,
+        "Exception": Exception,
+        "__import__": __import__,
     }
+    SAFE_IMPORTS = frozenset({"hashlib", "base64", "struct", "binascii", "itertools", "collections", "math", "re", "json"})
 
     def execute(self, program_fragment: str, inputs: dict[str, object]) -> dict[str, object]:
         tree = ast.parse(program_fragment, mode="exec")
-        _SafeAstValidator(set(self.SAFE_BUILTINS)).visit(tree)
+        _SafeAstValidator(set(self.SAFE_BUILTINS), self.SAFE_IMPORTS).visit(tree)
         globals_scope = {"__builtins__": self.SAFE_BUILTINS, "inputs": inputs, "json": json, "re": re}
+        for module_name in self.SAFE_IMPORTS:
+            globals_scope[module_name] = __import__(module_name)
         locals_scope: dict[str, object] = {}
         exec(compile(tree, "<sandbox>", "exec"), globals_scope, locals_scope)
         result = locals_scope.get("result", globals_scope.get("result"))
@@ -416,23 +429,21 @@ def _tokenize(text: str) -> list[str]:
 
 
 class _SafeAstValidator(ast.NodeVisitor):
-    def __init__(self, allowed_builtins: set[str]) -> None:
+    def __init__(self, allowed_builtins: set[str], safe_imports: frozenset[str] = frozenset()) -> None:
         self.allowed_builtins = allowed_builtins
+        self.safe_imports = safe_imports
+        self.defined_names: set[str] = set()
 
     def generic_visit(self, node: ast.AST) -> None:
         if isinstance(
             node,
             (
-                ast.Import,
-                ast.ImportFrom,
                 ast.With,
                 ast.AsyncWith,
-                ast.Try,
                 ast.Raise,
                 ast.Global,
                 ast.Nonlocal,
                 ast.ClassDef,
-                ast.FunctionDef,
                 ast.AsyncFunctionDef,
                 ast.Lambda,
                 ast.Delete,
@@ -440,6 +451,30 @@ class _SafeAstValidator(ast.NodeVisitor):
         ):
             raise RuntimeError("sandbox_disallowed_syntax")
         super().generic_visit(node)
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for alias in node.names:
+            if alias.name not in self.safe_imports:
+                raise RuntimeError("sandbox_disallowed_import")
+            self.defined_names.add(alias.name)
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        if node.module not in self.safe_imports:
+            raise RuntimeError("sandbox_disallowed_import")
+        for alias in node.names:
+            self.defined_names.add(alias.name if alias.asname is None else alias.asname)
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.defined_names.add(node.name)
+        self.generic_visit(node)
+
+    def visit_Assign(self, node: ast.Assign) -> None:
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                self.defined_names.add(target.id)
+        self.generic_visit(node)
 
     def visit_Attribute(self, node: ast.Attribute) -> None:
         if node.attr.startswith("__"):
@@ -452,8 +487,10 @@ class _SafeAstValidator(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        if isinstance(node.func, ast.Name) and node.func.id not in self.allowed_builtins:
-            raise RuntimeError("sandbox_disallowed_call")
+        if isinstance(node.func, ast.Name):
+            allowed = self.allowed_builtins | self.safe_imports | self.defined_names
+            if node.func.id not in allowed:
+                raise RuntimeError("sandbox_disallowed_call")
         if isinstance(node.func, ast.Attribute) and node.func.attr.startswith("__"):
             raise RuntimeError("sandbox_disallowed_call")
         self.generic_visit(node)

@@ -270,6 +270,7 @@ class TaskBundle:
     known_artifact_ids: list[str] = field(default_factory=list)
     known_hypothesis_ids: list[str] = field(default_factory=list)
     known_candidate_keys: list[str] = field(default_factory=list)
+    completed_observations: dict[str, Observation] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

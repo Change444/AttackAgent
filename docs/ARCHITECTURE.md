@@ -1,7 +1,7 @@
 # AttackAgent 项目架构文档
 
-**版本：** 2.0
-**最后更新：** 2026-04-25
+**版本：** 3.0
+**最后更新：** 2026-04-26
 **状态：** 活跃开发中
 **目的：** 本文档为 AttackAgent 项目的唯一真实架构源，所有开发决策和实施必须以此文档为准。
 
@@ -109,6 +109,7 @@
 │  │  WorkerRuntime (工作者运行时)                       │  │
 │  │  - run_task() - 任务执行                           │  │
 │  │  - PrimitiveAdapter.execute() - 原始动作执行       │  │
+│  │  - HttpSessionManager - 会话持久化管理 🆕          │  │
 │  └────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────┘
                            ↓
@@ -811,6 +812,8 @@ def select_path(self, context: PlanningContext) -> PathType:
 **职责：**
 - 执行 ActionProgram
 - 管理原始动作适配器
+- 创建 HttpSessionManager 并跨步骤传递
+- 增量填充 completed_observations
 - 聚合执行结果
 
 **核心接口：**
@@ -832,14 +835,23 @@ def run_task(self, task_bundle: TaskBundle) -> tuple[list[Event], ActionOutcome]
     aggregate = ActionOutcome(status="failed", failure_reason="no_steps")
     events: list[Event] = []
 
+    # 创建会话管理器（每次 run_task 创建一个）
+    session_manager = HttpSessionManager()
+
     # 循环执行每个步骤
     for step in task_bundle.action_program.steps:
         # 检查权限
         if step.primitive not in task_bundle.visible_primitives:
             continue
 
-        # 执行原始动作
-        outcome = self.registry.adapters[step.primitive].execute(step, task_bundle, self.sandbox)
+        # 执行原始动作（传入 session_manager）
+        outcome = self.registry.adapters[step.primitive].execute(
+            step, task_bundle, self.sandbox, session_manager
+        )
+
+        # 增量填充 completed_observations（供后续步骤引用）
+        for obs in outcome.observations:
+            task_bundle.completed_observations[obs.id] = obs
 
         # 聚合结果
         aggregate.observations.extend(outcome.observations)
@@ -881,19 +893,101 @@ def run_task(self, task_bundle: TaskBundle) -> tuple[list[Event], ActionOutcome]
 
 **职责：**
 - 执行具体的原始动作
-- 处理特定于原始动作的逻辑
-- 返回标准化的结果
+- 所有 9 个原始动作均支持真实执行路径
+- 无配置时自动回退到元数据消费路径
+
+**核心接口：**
+```python
+class PrimitiveAdapter:
+    def execute(self,
+                step: PrimitiveActionStep,
+                bundle: TaskBundle,
+                sandbox: CodeSandbox,
+                session_manager: HttpSessionManager | None = None) -> ActionOutcome:
+        """执行原始动作，session_manager 用于跨步骤会话持久化"""
+```
 
 **支持的原始动作：**
-- `http-request`：HTTP 请求
-- `browser-inspect`：浏览器检查
-- `artifact-scan`：文件扫描
-- `binary-inspect`：二进制检查
-- `code-sandbox`：代码沙盒
-- `structured-parse`：结构化解析
-- `diff-compare`：差异比较
-- `extract-candidate`：提取候选
-- `session-materialize`：会话物化
+
+| 原始动作 | 真实执行路径 | 触发方式 | 回退路径 |
+|----------|-------------|----------|----------|
+| `http-request` | HTTP GET/POST/PUT/DELETE，cookie 持久化，重定向跟随 | `metadata.http_request` | `_consume_metadata` |
+| `browser-inspect` | HTTP 抓取 + HTMLParser 解析，会话共享 | `metadata.browser_inspect` | `_consume_metadata` |
+| `artifact-scan` | 本地文件扫描 + HTTP 下载 + zip/tar 解压 | `metadata.artifact_scan` 或 `step.parameters.location` (http/https/file) | `_consume_metadata` |
+| `binary-inspect` | ASCII/UTF-8/UTF-16LE 字串提取 + ELF/PE 头解析 | `metadata.binary_inspect` 或 `step.parameters.location` | `_consume_metadata` |
+| `code-sandbox` | AST 安全验证的 Python 执行 | `step.instruction` 含 Python 代码 | `_consume_metadata` |
+| `session-materialize` | HTTP POST 登录 + cookie 持久化 | `metadata.session_materialize` | `_consume_metadata` |
+| `structured-parse` | JSON/HTML/headers 解析 + 字段提取 | `step.parameters.parse_source/format/extract_fields` | `_consume_metadata` |
+| `diff-compare` | difflib 序列对比 + 变更统计 | `step.parameters.baseline_observation_id/variant_observation_id` | `_consume_metadata` |
+| `extract-candidate` | 多模式正则提取 + completed_observations 搜索 | `step.parameters.patterns` 或 `challenge.flag_pattern` | `_consume_metadata` |
+
+#### 3.4.3 HttpSessionManager 🆕
+
+**文件位置：** `attack_agent/runtime.py`
+
+**职责：**
+- 管理 HTTP 会话的 cookie 持久化
+- 构建带 cookie 处理和重定向跟随的 opener
+- 跨步骤共享会话状态
+
+**数据结构：**
+```python
+@dataclass(slots=True)
+class HttpSessionManager:
+    cookie_jar: http.cookiejar.CookieJar = field(default_factory=http.cookiejar.CookieJar)
+    max_redirects: int = 5
+
+    def build_opener(self) -> request.OpenerDirector:
+        """构建带 cookie 处理和重定向的 opener"""
+
+    def get_cookies_text(self) -> list[str]:
+        """获取所有 cookie 的文本表示"""
+```
+
+**使用方式：**
+- `WorkerRuntime.run_task` 在每次任务执行开始时创建一个 `HttpSessionManager`
+- 将 `session_manager` 传递给每个 `PrimitiveAdapter.execute` 调用
+- `http-request`、`browser-inspect`、`session-materialize`、`artifact-scan` 共享同一会话
+
+#### 3.4.4 CodeSandbox
+
+**文件位置：** `attack_agent/apg.py`
+
+**职责：**
+- 安全执行 Python 代码片段
+- AST 级别的安全验证
+- 限制可用的内置函数和导入模块
+
+**安全规则：**
+
+允许的内置函数 (SAFE_BUILTINS)：
+```python
+SAFE_BUILTINS = {
+    "print": print, "len": len, "range": range, "int": int, "str": str,
+    "float": float, "list": list, "dict": dict, "tuple": tuple, "set": set,
+    "bool": bool, "bytes": bytes, "bytearray": bytearray, "enumerate": enumerate,
+    "zip": zip, "map": map, "filter": filter, "sorted": sorted, "reversed": reversed,
+    "min": min, "max": max, "sum": sum, "abs": abs, "isinstance": isinstance,
+    "type": type, "ord": ord, "chr": chr, "hex": hex, "bin": bin,
+    "round": round, "abs": abs, "all": all, "any": any,
+    "ValueError": ValueError, "TypeError": TypeError, "KeyError": KeyError,
+    "IndexError": IndexError, "AttributeError": AttributeError,
+    "RuntimeError": RuntimeError, "Exception": Exception, "__import__": __import__,
+}
+```
+
+允许的导入模块 (SAFE_IMPORTS)：
+```python
+SAFE_IMPORTS = frozenset({
+    "hashlib", "base64", "struct", "binascii", "itertools",
+    "collections", "math", "re", "json",
+})
+```
+
+AST 验证规则 (_SafeAstValidator)：
+- **允许**：Import（仅 SAFE_IMPORTS）、ImportFrom（仅 SAFE_IMPORTS）、FunctionDef、Try、Assign
+- **禁止**：ClassDef、Lambda、With、Raise、Global、Delete、dunder 属性访问
+- **调用验证**：允许调用 `allowed_builtins | safe_imports | defined_names`
 
 ### 3.5 状态层模块
 
@@ -1027,7 +1121,10 @@ class TaskBundle:
     known_artifact_ids: list[str] = field(default_factory=list)
     known_hypothesis_ids: list[str] = field(default_factory=list)
     known_candidate_keys: list[str] = field(default_factory=list)
+    completed_observations: dict[str, Observation] = field(default_factory=dict)  # 🆕
 ```
+
+> **completed_observations** 🆕：WorkerRuntime.run_task 在每步执行后增量填充此字典。后续步骤（如 `structured-parse`、`diff-compare`、`extract-candidate`）可通过 observation ID 查找前序步骤产出的观测结果。
 
 #### Event
 ```python
@@ -1393,8 +1490,18 @@ class ReasoningModel(Protocol):
 9. 任务执行
    ↓
    WorkerRuntime.run_task()
-   ├─ PrimitiveAdapter.execute() [每个步骤]
-   ├─ CodeSandbox.execute() [如果需要]
+   ├─ HttpSessionManager 创建 🆕
+   ├─ PrimitiveAdapter.execute(step, bundle, sandbox, session_manager) [每个步骤]
+   │  ├─ http-request: GET/POST + cookie 持久化
+   │  ├─ browser-inspect: HTMLParser + 会话共享
+   │  ├─ session-materialize: HTTP POST 登录
+   │  ├─ structured-parse: JSON/HTML/headers 解析
+   │  ├─ diff-compare: difflib 序列对比
+   │  ├─ artifact-scan: HTTP 下载 + 解压
+   │  ├─ binary-inspect: UTF-8/wide + ELF/PE 头
+   │  ├─ code-sandbox: AST 安全执行
+   │  └─ extract-candidate: 多模式正则
+   ├─ completed_observations 增量填充 🆕
    └─ 聚合结果
    ↓
 10. 状态更新
@@ -1601,7 +1708,23 @@ class ReasoningModel(Protocol):
 }
 ```
 
-### 7.2 配置加载
+### 7.2 可选依赖 🆕
+
+**文件位置：** `pyproject.toml`
+
+```toml
+[project.optional-dependencies]
+openai = ["openai>=1.0"]
+anthropic = ["anthropic>=0.20"]
+http = ["requests>=2.28"]          # 🆕 HTTP 高级功能（stdlib 为默认回退）
+browser = ["playwright>=1.40"]     # 🆕 浏览器自动化（stdlib HTTP 为默认回退）
+all-models = ["openai>=1.0", "anthropic>=0.20"]
+all = ["openai>=1.0", "anthropic>=0.20", "requests>=2.28", "playwright>=1.40"]
+```
+
+> **回退机制**：所有原始动作的默认实现使用 Python 标准库（`urllib.request`、`html.parser`、`json` 等）。安装 `requests` 或 `playwright` 后可获得增强功能，但未安装时系统仍可正常运行。
+
+### 7.3 配置加载
 
 ```python
 from dataclasses import dataclass
@@ -1700,27 +1823,40 @@ class AttackAgentConfig:
 - [x] 基础规划器接口
 - [x] 集成到 Dispatcher
 
-#### 阶段2：自由探索路径（当前）
-- [ ] 实现 ConstraintAwareReasoner
-- [ ] 实现约束上下文构建
-- [ ] 实现模型提示生成
-- [ ] 实现 EnhancedAPGPlanner
-- [ ] 实现路径选择逻辑
-- [ ] 集成到现有架构
+#### 阶段2：自由探索路径（已完成 ✅）
+- [x] 实现 ConstraintAwareReasoner
+- [x] 实现约束上下文构建
+- [x] 实现模型提示生成
+- [x] 实现 EnhancedAPGPlanner
+- [x] 实现路径选择逻辑
+- [x] 集成到现有架构
 
-#### 阶段3：动态模式发现
-- [ ] 实现 DynamicPatternComposer
-- [ ] 实现模式发现算法
-- [ ] 实现模式存储和检索
-- [ ] 添加模式事件记录
+#### 阶段3：动态模式发现（已完成 ✅）
+- [x] 实现 DynamicPatternComposer
+- [x] 实现模式发现算法
+- [x] 实现模式存储和检索
+- [x] 添加模式事件记录
 
-#### 阶段4：语义检索增强
-- [ ] 实现 SemanticRetrievalEngine
-- [ ] 实现向量存储接口
-- [ ] 实现混合检索策略
-- [ ] 集成向量嵌入模型
+#### 阶段4：语义检索增强（已完成 ✅）
+- [x] 实现 SemanticRetrievalEngine
+- [x] 实现向量存储接口
+- [x] 实现混合检索策略
+- [x] 集成向量嵌入模型
 
-#### 阶段5：自适应和优化
+#### 阶段5：真实 PrimitiveAdapter 实现（已完成 ✅） 🆕
+- [x] HttpSessionManager 会话持久化
+- [x] http-request POST/PUT/DELETE + cookie + 重定向
+- [x] session-materialize HTTP POST 登录
+- [x] structured-parse JSON/HTML/headers 解析
+- [x] diff-compare difflib 序列对比
+- [x] browser-inspect HTMLParser + 无 localhost 限制 + 会话共享
+- [x] artifact-scan HTTP 下载 + zip/tar 解压
+- [x] binary-inspect UTF-8/wide 字串 + ELF/PE 头解析
+- [x] extract-candidate 多模式正则 + completed_observations 搜索
+- [x] CodeSandbox 安全导入白名单 + FunctionDef/Try 支持
+- [x] TaskBundle.completed_observations 跨步骤数据共享
+
+#### 阶段6：自适应和优化
 - [ ] 实现路径选择自适应
 - [ ] 添加性能监控
 - [ ] 优化检索质量
@@ -1728,24 +1864,26 @@ class AttackAgentConfig:
 
 ### 8.2 开发优先级
 
-| 优先级 | 模块 | 预计工作量 | 依赖 |
-|--------|------|------------|------|
-| P0 | ConstraintAwareReasoner | 3天 | 安全壳 |
-| P0 | EnhancedAPGPlanner | 2天 | ConstraintAwareReasoner |
-| P0 | 路径选择逻辑 | 2天 | EnhancedAPGPlanner |
-| P1 | DynamicPatternComposer | 4天 | EnhancedAPGPlanner |
-| P1 | SemanticRetrievalEngine | 5天 | 向量模型 |
-| P2 | 自适应优化 | 3天 | 以上所有 |
+| 优先级 | 模块 | 预计工作量 | 依赖 | 状态 |
+|--------|------|------------|------|------|
+| P0 | ConstraintAwareReasoner | 3天 | 安全壳 | ✅ 完成 |
+| P0 | EnhancedAPGPlanner | 2天 | ConstraintAwareReasoner | ✅ 完成 |
+| P0 | 路径选择逻辑 | 2天 | EnhancedAPGPlanner | ✅ 完成 |
+| P0 | 真实 PrimitiveAdapter | 4天 | HttpSessionManager | ✅ 完成 |
+| P1 | DynamicPatternComposer | 4天 | EnhancedAPGPlanner | ✅ 完成 |
+| P1 | SemanticRetrievalEngine | 5天 | 向量模型 | ✅ 完成 |
+| P2 | 自适应优化 | 3天 | 以上所有 | 待开发 |
 
 ### 8.3 里程碑
 
-| 里程碑 | 目标 | 预计时间 |
-|--------|------|----------|
-| M1 | 自由探索路径可用 | 1周 |
-| M2 | 双路径切换正常 | 1.5周 |
-| M3 | 模式发现功能 | 2.5周 |
-| M4 | 语义检索集成 | 3.5周 |
-| M5 | 完整架构验证 | 4周 |
+| 里程碑 | 目标 | 预计时间 | 状态 |
+|--------|------|----------|------|
+| M1 | 自由探索路径可用 | 1周 | ✅ 完成 |
+| M2 | 双路径切换正常 | 1.5周 | ✅ 完成 |
+| M3 | 模式发现功能 | 2.5周 | ✅ 完成 |
+| M4 | 语义检索集成 | 3.5周 | ✅ 完成 |
+| M5 | 真实 PrimitiveAdapter | 4.5周 | ✅ 完成 |
+| M6 | 完整架构验证 | 5周 | 待开发 |
 
 ---
 
@@ -1754,22 +1892,35 @@ class AttackAgentConfig:
 ### 9.1 功能验收
 
 #### 自由探索路径验收
-- [ ] 能够生成符合约束的自由计划
-- [ ] 模型提示包含正确的约束信息
-- [ ] 路径选择逻辑正常工作
-- [ ] 能够回退到结构化路径
+- [x] 能够生成符合约束的自由计划
+- [x] 模型提示包含正确的约束信息
+- [x] 路径选择逻辑正常工作
+- [x] 能够回退到结构化路径
 
 #### 模式发现验收
-- [ ] 能够从成功案例发现新模式
-- [ ] 模式参数化正确
-- [ ] 模式应用准确
-- [ ] 模式质量评估合理
+- [x] 能够从成功案例发现新模式
+- [x] 模式参数化正确
+- [x] 模式应用准确
+- [x] 模式质量评估合理
 
 #### 语义检索验收
-- [ ] 能够索引新案例
-- [ ] 语义检索准确
-- [ ] 混合评分有效
-- [ ] 检索延迟可接受
+- [x] 能够索引新案例
+- [x] 语义检索准确
+- [x] 混合评分有效
+- [x] 检索延迟可接受
+
+#### 真实 PrimitiveAdapter 验收 🆕
+- [x] 所有 9 个原始动作支持真实执行
+- [x] HttpSessionManager cookie 持久化正常
+- [x] POST/PUT/DELETE + form 编码正常
+- [x] session-materialize HTTP POST 登录正常
+- [x] structured-parse JSON/HTML/headers 解析正常
+- [x] diff-compare 序列对比 + 变更统计正常
+- [x] artifact-scan HTTP 下载 + zip/tar 解压正常
+- [x] binary-inspect UTF-8/wide 字串 + ELF/PE 头正常
+- [x] browser-inspect HTMLParser 正常，无 localhost 限制
+- [x] CodeSandbox 安全导入 + FunctionDef/Try 正常
+- [x] 元数据回退路径向后兼容正常
 
 ### 9.2 性能验收
 
@@ -1808,18 +1959,19 @@ attack_agent/
 ├── controller.py            # 控制器
 ├── dispatcher.py            # 调度器
 ├── state_graph.py           # 状态图服务
-├── runtime.py               # 运行时执行
+├── runtime.py               # 运行时执行 (PrimitiveAdapter + HttpSessionManager 🆕)
 ├── strategy.py              # 策略层
-├── apg.py                   # APG 规划器
+├── apg.py                   # APG 规划器 (CodeSandbox 🆕)
 ├── reasoning.py             # 推理器
 ├── constraints.py           # 约束验证 ✅
 ├── models.py                # 基础模型
-├── platform_models.py       # 平台模型
+├── platform_models.py       # 平台模型 (TaskBundle.completed_observations 🆕)
 ├── world_state.py           # 世界状态
 ├── compilers.py             # 编译器
 ├── console.py               # 控制台
 ├── platform_demo.py         # 平台演示
-├── platform_models.py       # 平台模型
+├── config.py                # 配置管理 🆕
+├── llm_adapters.py          # LLM 适配器 🆕
 ├── enhanced_apg.py          # 增强规划器 🆕
 ├── constraint_aware_reasoner.py  # 约束感知推理器 🆕
 ├── dynamic_pattern_composer.py  # 动态模式组合器 🆕
@@ -1843,7 +1995,11 @@ tests/
 ├── test_constraint_aware_reasoner.py  # 约束推理测试 🆕
 ├── test_dynamic_pattern_composer.py   # 模式组合测试 🆕
 ├── test_semantic_retrieval.py         # 语义检索测试 🆕
-└── test_path_selection.py            # 路径选择测试 🆕
+├── test_path_selection.py            # 路径选择测试 🆕
+├── test_real_primitives.py           # 真实原始动作测试 🆕 (38 tests)
+├── test_config.py                    # 配置测试
+├── test_llm_adapters.py              # LLM适配器测试
+└── test_semantic_retrieval_unit.py   # 语义检索单元测试
 
 docs/
 ├── ARCHITECTURE.md          # 本文档
@@ -1878,17 +2034,23 @@ data/
 | PathType | 路径类型，结构化、自由探索、混合 |
 | PlanningContext | 规划上下文，规划过程的信息 |
 | ConstraintContext | 约束上下文，用于模型的约束信息 |
-| PatternTemplate | 模式模板，可重用的模式抽象 |
+| HttpSessionManager | HTTP 会话管理器，管理 cookie 持久化和重定向 | 🆕 |
+| completed_observations | 完成的观测字典，TaskBundle 上跨步骤数据共享 | 🆕 |
+| SAFE_IMPORTS | CodeSandbox 允许导入的模块白名单 | 🆕 |
+| SAFE_BUILTINS | CodeSandbox 允许的内置函数白名单 | 🆕 |
+| _SafeAstValidator | AST 安全验证器，跟踪 defined_names | 🆕 |
+| _HTMLPageParser | HTML 解析器，替代 regex 提取 | 🆕 |
 
 ### C. 版本历史
 
 | 版本 | 日期 | 变更说明 |
 |------|------|----------|
+| 3.0 | 2026-04-26 | 真实 PrimitiveAdapter 实现，HttpSessionManager，completed_observations，CodeSandbox 增强 |
 | 2.0 | 2026-04-25 | 添加双路径架构，完整重写 |
 | 1.0 | - | 初始版本 |
 
 ---
 
 **文档维护者：** AttackAgent 开发团队
-**最后审核：** 2026-04-25
+**最后审核：** 2026-04-26
 **下次审核：** 实施完成后
