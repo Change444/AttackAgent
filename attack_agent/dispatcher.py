@@ -9,22 +9,13 @@ from .constraints import LightweightSecurityShell, SecurityConstraints
 
 
 class Dispatcher:
-    def __init__(self, state_graph: StateGraphService, runtime: WorkerRuntime, strategy: StrategyLayer, worker_pool: WorkerPool | None = None) -> None:
+    def __init__(self, state_graph: StateGraphService, runtime: WorkerRuntime, strategy: StrategyLayer, worker_pool: WorkerPool | None = None, security_constraints: SecurityConstraints | None = None) -> None:
         self.state_graph = state_graph
         self.runtime = runtime
         self.strategy = strategy
         self.worker_pool = worker_pool or WorkerPool()
-        # 添加轻量级安全壳
-        self.security_shell = LightweightSecurityShell(
-            SecurityConstraints(
-                allowed_hostpatterns=["127.0.0.1", "localhost"],
-                max_http_requests=30,
-                max_sandbox_executions=5,
-                max_program_steps=15,
-                require_observation_before_action=True,
-                max_estimated_cost=50.0
-            )
-        )
+        # 安全壳：接受外部传入的约束，或使用默认值
+        self.security_shell = LightweightSecurityShell(security_constraints)
 
     def schedule(self, project_id: str) -> None:
         record = self.state_graph.projects[project_id]

@@ -4,6 +4,8 @@
 特点：快速、轻量、不阻断模型决策
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
 from collections import Counter
 
@@ -27,27 +29,43 @@ class ValidationResult:
 
 @dataclass(slots=True)
 class SecurityConstraints:
-    """安全约束配置（轻量级，只包含核心安全项）"""
+    """安全约束配置（轻量级，只包含核心安全项）
+
+    默认值与 AttackAgentConfig.security (SecurityConfig) 保持一致。
+    可通过 from_config() 从 SecurityConfig 构建，确保配置系统与运行时约束单一真实源。
+    """
     # 目标范围限制
     allowed_hostpatterns: list[str] = None  # ["127.0.0.1", "localhost"]
 
     # 原始动作使用限制
-    max_http_requests: int = 50
-    max_sandbox_executions: int = 10
+    max_http_requests: int = 30
+    max_sandbox_executions: int = 5
     forbidden_primitive_combinations: list[tuple[str, str]] = None
 
     # 结构限制
-    max_program_steps: int = 20
+    max_program_steps: int = 15
     require_observation_before_action: bool = True
 
     # 资源限制
-    max_estimated_cost: float = 100.0
+    max_estimated_cost: float = 50.0
 
     def __post_init__(self):
         if self.allowed_hostpatterns is None:
             self.allowed_hostpatterns = ["127.0.0.1", "localhost"]
         if self.forbidden_primitive_combinations is None:
             self.forbidden_primitive_combinations = []
+
+    @classmethod
+    def from_config(cls, security_config: SecurityConfig) -> SecurityConstraints:
+        """从 SecurityConfig 构建安全约束，确保配置文件驱动的约束值"""
+        return cls(
+            allowed_hostpatterns=list(security_config.allowed_hostpatterns),
+            max_http_requests=security_config.max_http_requests,
+            max_sandbox_executions=security_config.max_sandbox_executions,
+            max_program_steps=security_config.max_program_steps,
+            require_observation_before_action=security_config.require_observation_before_action,
+            max_estimated_cost=security_config.max_estimated_cost,
+        )
 
 
 class LightweightSecurityShell:

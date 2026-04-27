@@ -5,6 +5,8 @@ from attack_agent.constraints import (
     ConstraintViolation,
     ValidationResult
 )
+from attack_agent.config import SecurityConfig, AttackAgentConfig, PlatformConfig, MemoryConfig, LoggingConfig, PatternDiscoveryConfig, SemanticRetrievalConfig, ModelConfig
+from attack_agent.platform_models import DualPathConfig
 from attack_agent.platform_models import (
     ActionProgram,
     PrimitiveActionStep,
@@ -13,6 +15,49 @@ from attack_agent.platform_models import (
     ChallengeInstance,
     WorkerProfile
 )
+
+
+class TestSecurityConstraintsDefaults(unittest.TestCase):
+    """测试 SecurityConstraints 默认值与 SecurityConfig 对齐"""
+
+    def test_defaults_match_security_config(self):
+        """SecurityConstraints 默认值应与 SecurityConfig 默认值一致"""
+        constraints = SecurityConstraints()
+        config = SecurityConfig()
+        self.assertEqual(constraints.max_http_requests, config.max_http_requests)
+        self.assertEqual(constraints.max_sandbox_executions, config.max_sandbox_executions)
+        self.assertEqual(constraints.max_program_steps, config.max_program_steps)
+        self.assertEqual(constraints.require_observation_before_action, config.require_observation_before_action)
+        self.assertEqual(constraints.max_estimated_cost, config.max_estimated_cost)
+        self.assertEqual(constraints.allowed_hostpatterns, config.allowed_hostpatterns)
+
+    def test_from_config_preserves_values(self):
+        """from_config 应将 SecurityConfig 值完整映射到 SecurityConstraints"""
+        config = SecurityConfig(
+            allowed_hostpatterns=["10.0.0.1", "target.example.com"],
+            max_http_requests=100,
+            max_sandbox_executions=3,
+            max_program_steps=10,
+            require_observation_before_action=False,
+            max_estimated_cost=200.0,
+        )
+        constraints = SecurityConstraints.from_config(config)
+        self.assertEqual(constraints.allowed_hostpatterns, ["10.0.0.1", "target.example.com"])
+        self.assertEqual(constraints.max_http_requests, 100)
+        self.assertEqual(constraints.max_sandbox_executions, 3)
+        self.assertEqual(constraints.max_program_steps, 10)
+        self.assertEqual(constraints.require_observation_before_action, False)
+        self.assertEqual(constraints.max_estimated_cost, 200.0)
+
+    def test_from_config_default_security_config(self):
+        """from_config 使用默认 SecurityConfig 应产生与默认 SecurityConstraints 相同的结果"""
+        config = SecurityConfig()
+        constraints_from_config = SecurityConstraints.from_config(config)
+        constraints_default = SecurityConstraints()
+        self.assertEqual(constraints_from_config.max_http_requests, constraints_default.max_http_requests)
+        self.assertEqual(constraints_from_config.max_program_steps, constraints_default.max_program_steps)
+        self.assertEqual(constraints_from_config.max_estimated_cost, constraints_default.max_estimated_cost)
+        self.assertEqual(constraints_from_config.allowed_hostpatterns, constraints_default.allowed_hostpatterns)
 
 
 class TestLightweightSecurityShell(unittest.TestCase):

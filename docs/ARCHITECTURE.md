@@ -1,7 +1,7 @@
 # AttackAgent 项目架构文档
 
-**版本：** 3.0
-**最后更新：** 2026-04-26
+**版本：** 3.3
+**最后更新：** 2026-04-27
 **状态：** 活跃开发中
 **目的：** 本文档为 AttackAgent 项目的唯一真实架构源，所有开发决策和实施必须以此文档为准。
 
@@ -181,10 +181,11 @@ ActionProgram  ActionProgram
 class CompetitionPlatform:
     def __init__(self,
                  provider: CompetitionProvider,
-                 state_graph: StateGraphService,
-                 dispatcher: Dispatcher,
-                 controller: Controller):
-        """初始化平台"""
+                 reasoner: HeuristicReasoner | None = None,
+                 model: ReasoningModel | None = None,
+                 config: DualPathConfig | None = None,
+                 agent_config: AttackAgentConfig | None = None):
+        """初始化平台，agent_config.security 驱动安全约束"""
 
     def solve_all(self, max_cycles: int = 50) -> None:
         """解决所有挑战"""
@@ -200,7 +201,43 @@ class CompetitionPlatform:
 4. 控制器管理提交和提示
 5. 更新状态和记录结果
 
-#### 3.1.2 Controller
+#### 3.1.3 CLI 入口 🆕
+
+**文件位置：** `attack_agent/__main__.py`
+
+**职责：**
+- 提供 `python -m attack_agent` 命令行入口
+- 加载配置文件、构建 Provider 和 Model
+- 输出解决摘要和详细运行日志
+
+**核心接口：**
+```python
+def main(argv: list[str] | None = None) -> None:
+    """CLI 主入口"""
+```
+
+**CLI 参数：**
+```
+python -m attack_agent [options]
+  --config, -c          配置文件路径 (默认: config/settings.json)
+  --provider-url        HTTP Provider URL (如 http://127.0.0.1:8080)
+  --challenges-file     挑战定义 JSON 文件路径
+  --model               模型选择: heuristic / openai / anthropic
+  --max-cycles          覆盖最大循环次数
+  --verbose, -v         输出详细运行日志和模式图
+```
+
+**启动流程：**
+1. 解析 CLI 参数
+2. 加载 AttackAgentConfig（文件或默认值）
+3. CLI 覆盖项应用到 config
+4. 构建 Provider（URL / JSON文件 / 默认 demo）
+5. 构建 ReasoningModel（从 config 或 heuristic）
+6. 创建 CompetitionPlatform 并 solve_all()
+7. 输出 WebConsoleView 摘要
+8. `--verbose` 时输出每个项目的运行日志和模式图
+
+#### 3.1.4 Controller
 
 **文件位置：** `attack_agent/controller.py`
 
@@ -243,8 +280,9 @@ class Dispatcher:
                  state_graph: StateGraphService,
                  runtime: WorkerRuntime,
                  strategy: StrategyLayer,
-                 worker_pool: WorkerPool | None = None):
-        """初始化调度器"""
+                 worker_pool: WorkerPool | None = None,
+                 security_constraints: SecurityConstraints | None = None):
+        """初始化调度器，security_constraints 从 AttackAgentConfig.security 构建"""
 
     def schedule(self, project_id: str) -> None:
         """调度单个项目的任务"""
@@ -330,24 +368,44 @@ def schedule(self, project_id: str) -> None:
 - 在 runtime 执行前验证约束
 - 快速轻量级的安全检查
 - 记录违规但不阻断决策
+- **约束值从 SecurityConfig 构建（单一真实源）**
 
 **核心接口：**
 ```python
 class LightweightSecurityShell:
     def __init__(self, constraints: SecurityConstraints | None = None):
-        """初始化安全壳"""
+        """初始化安全壳，constraints 由 SecurityConstraints.from_config(SecurityConfig) 构建"""
 
     def validate(self, bundle: TaskBundle) -> ValidationResult:
         """验证任务包是否满足安全约束"""
 ```
 
-**验证规则：**
-1. **目标范围验证**：检查目标是否在允许的 host 范围内
-2. **原始动作计数验证**：检查原始动作调用次数限制
-3. **程序结构验证**：检查程序步骤数量
-4. **操作顺序验证**：检查是否先观察后行动
-5. **资源限制验证**：检查预估成本
-6. **禁止组合验证**：检查禁止的原始动作组合
+**SecurityConstraints 与 SecurityConfig 对齐：**
+```python
+@dataclass(slots=True)
+class SecurityConstraints:
+    """安全约束 — 默认值与 SecurityConfig 保持一致"""
+
+    allowed_hostpatterns: list[str] = None    # 默认 ["127.0.0.1", "localhost"]
+    max_http_requests: int = 30               # 对齐 SecurityConfig
+    max_sandbox_executions: int = 5           # 对齐 SecurityConfig
+    forbidden_primitive_combinations: list[tuple[str, str]] = None
+    max_program_steps: int = 15               # 对齐 SecurityConfig
+    require_observation_before_action: bool = True
+    max_estimated_cost: float = 50.0          # 对齐 SecurityConfig
+
+    @classmethod
+    def from_config(cls, security_config: SecurityConfig) -> SecurityConstraints:
+        """从 SecurityConfig 构建，确保配置文件驱动的约束值"""
+        return cls(
+            allowed_hostpatterns=list(security_config.allowed_hostpatterns),
+            max_http_requests=security_config.max_http_requests,
+            max_sandbox_executions=security_config.max_sandbox_executions,
+            max_program_steps=security_config.max_program_steps,
+            require_observation_before_action=security_config.require_observation_before_action,
+            max_estimated_cost=security_config.max_estimated_cost,
+        )
+```
 
 **违规等级：**
 - **critical**：阻止执行
@@ -1857,22 +1915,52 @@ class AttackAgentConfig:
 - [x] TaskBundle.completed_observations 跨步骤数据共享
 
 #### 阶段6：自适应和优化
+- [x] SecurityConstraints 与 SecurityConfig 对齐 ✅
+- [x] CLI 入口 (`python -m attack_agent`) ✅
+- [x] 真实靶场集成测试 ✅
 - [ ] 实现路径选择自适应
 - [ ] 添加性能监控
 - [ ] 优化检索质量
 - [ ] 优化规划延迟
 
+#### 阶段7：LLM 反馈闭环 + 原语参数化 🆕
+
+当前平台虽可接入 LLM，但存在两个关键能力缺口导致无法解决真实 CTF 题目：
+
+**缺口 1: LLM 无执行反馈闭环**
+
+执行后产生的丰富观测数据（HTTP 响应体、解析的 HTML、发现的端点、凭据等）存储在 `record.observations[id].payload` 和 `record.world_state` 中，但规划器只读标签和计数：
+- 结构化路径 (APGPlanner): 查询字符串仅含 `observation.kind`（如 "http-response"）
+- 自由探索路径 (ConstraintAwareReasoner._extract_current_state()): 输出 "已有观察: 3 个" 计数
+- EpisodeMemory 摘要极简: "identity-boundary observe -> ok"
+
+LLM 生成一次计划后永远看不到执行结果，无法迭代调整策略。
+
+**缺口 2: 原语未参数化**
+
+9 个原语中 6 个（http-request, browser-inspect, session-materialize, artifact-scan, binary-inspect, extract-candidate）完全忽略 `step.parameters`，所有操作参数来自 `instance.metadata`。LLM 提示词中 `parameters: {}` 为空占位符，LLM 无法指定 HTTP 路径/方法/body、登录凭据等具体参数。运行时 `_resolve_*_specs()` 在 metadata 不存在时返回空列表，强制回退到 `_consume_metadata`。
+
+- [ ] ObservationSummarizer — 新模块，将观测 payload 总结为有限长度文本供 LLM prompt
+- [ ] Primitive 参数化 — `_resolve_*_specs()` 接受 `step.parameters` 作为替代/覆盖源
+- [ ] ConstraintAwareReasoner enrichment — `_extract_current_state()` 输出实际内容而非计数
+- [ ] ReasoningContext + APGPlanner — 加入 `observation_summaries` 字段，注入观测内容摘要
+- [ ] 安全壳参数验证 — 验证 `step.parameters` 中 URL scope
+- [ ] FAMILY_PROGRAMS 保守参数化 — 添加默认 method 参数
+
 ### 8.2 开发优先级
 
 | 优先级 | 模块 | 预计工作量 | 依赖 | 状态 |
 |--------|------|------------|------|------|
+| P0 | SecurityConstraints 对齐 SecurityConfig | 1天 | 配置系统 | ✅ 完成 |
 | P0 | ConstraintAwareReasoner | 3天 | 安全壳 | ✅ 完成 |
 | P0 | EnhancedAPGPlanner | 2天 | ConstraintAwareReasoner | ✅ 完成 |
 | P0 | 路径选择逻辑 | 2天 | EnhancedAPGPlanner | ✅ 完成 |
 | P0 | 真实 PrimitiveAdapter | 4天 | HttpSessionManager | ✅ 完成 |
 | P1 | DynamicPatternComposer | 4天 | EnhancedAPGPlanner | ✅ 完成 |
 | P1 | SemanticRetrievalEngine | 5天 | 向量模型 | ✅ 完成 |
+| P1 | CLI 入口 + 集成测试 | 2天 | AttackAgentConfig | ✅ 完成 |
 | P2 | 自适应优化 | 3天 | 以上所有 | 待开发 |
+| P3 | LLM 反馈闭环 + 原语参数化 | 4天 | P2 | 待开发 |
 
 ### 8.3 里程碑
 
@@ -1955,6 +2043,7 @@ class AttackAgentConfig:
 ```
 attack_agent/
 ├── __init__.py
+├── __main__.py              # CLI 入口 🆕
 ├── platform.py              # 平台入口
 ├── controller.py            # 控制器
 ├── dispatcher.py            # 调度器
@@ -1997,6 +2086,7 @@ tests/
 ├── test_semantic_retrieval.py         # 语义检索测试 🆕
 ├── test_path_selection.py            # 路径选择测试 🆕
 ├── test_real_primitives.py           # 真实原始动作测试 🆕 (38 tests)
+├── test_cli.py                       # CLI 入口 + HTTP 集成测试 🆕
 ├── test_config.py                    # 配置测试
 ├── test_llm_adapters.py              # LLM适配器测试
 └── test_semantic_retrieval_unit.py   # 语义检索单元测试
@@ -2039,12 +2129,18 @@ data/
 | SAFE_IMPORTS | CodeSandbox 允许导入的模块白名单 | 🆕 |
 | SAFE_BUILTINS | CodeSandbox 允许的内置函数白名单 | 🆕 |
 | _SafeAstValidator | AST 安全验证器，跟踪 defined_names | 🆕 |
+| __main__.py | CLI 入口模块，提供 `python -m attack_agent` 命令行接口 | 🆕 |
+| LocalHTTPCompetitionProvider | HTTP 协议的竞赛 Provider，对接远程靶场 API | 🆕 |
+| AttackAgentConfig.from_defaults() | 无配置文件时使用全默认值构建配置 | 🆕 |
 | _HTMLPageParser | HTML 解析器，替代 regex 提取 | 🆕 |
 
 ### C. 版本历史
 
 | 版本 | 日期 | 变更说明 |
 |------|------|----------|
+| 3.3 | 2026-04-27 | 记录 LLM 反馈闭环缺失 + 原语未参数化问题，规划阶段7实施方案 |
+| 3.2 | 2026-04-27 | CLI 入口 (`python -m attack_agent`)，AttackAgentConfig.from_defaults()，真实靶场 HTTP 集成测试 |
+| 3.1 | 2026-04-27 | SecurityConstraints 与 SecurityConfig 对齐：默认值同步、from_config() 工厂方法、Dispatcher/Platform 接受外部约束 |
 | 3.0 | 2026-04-26 | 真实 PrimitiveAdapter 实现，HttpSessionManager，completed_observations，CodeSandbox 增强 |
 | 2.0 | 2026-04-25 | 添加双路径架构，完整重写 |
 | 1.0 | - | 初始版本 |
@@ -2052,5 +2148,5 @@ data/
 ---
 
 **文档维护者：** AttackAgent 开发团队
-**最后审核：** 2026-04-26
-**下次审核：** 实施完成后
+**最后审核：** 2026-04-27
+**下次审核：** P3 (LLM 反馈闭环) 完成后

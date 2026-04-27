@@ -64,6 +64,7 @@ class ModelConfig:
     max_tokens: int = 1024
     timeout_seconds: int = 30
     max_retries: int = 2
+    observation_summary_budget_chars: int = 2000
 
 
 @dataclass(slots=True)
@@ -83,6 +84,20 @@ class AttackAgentConfig:
     memory: MemoryConfig
     logging: LoggingConfig
     model: ModelConfig = field(default_factory=ModelConfig)
+
+    @classmethod
+    def from_defaults(cls) -> AttackAgentConfig:
+        """Create config with all defaults — no file needed."""
+        return cls(
+            platform=PlatformConfig(),
+            dual_path=DualPathConfig(),
+            pattern_discovery=PatternDiscoveryConfig(),
+            semantic_retrieval=SemanticRetrievalConfig(),
+            security=SecurityConfig(),
+            memory=MemoryConfig(),
+            logging=LoggingConfig(),
+            model=ModelConfig(),
+        )
 
     @classmethod
     def from_file(cls, config_path: Path) -> AttackAgentConfig:

@@ -9,10 +9,19 @@ AttackAgent 是一个面向授权靶场和 CTF 竞赛的渗透测试 Agent。核
 ## Quick Start
 
 ```bash
-# 运行全部测试（165 个）
+# 运行全部测试（182 个）
 python -m unittest discover tests/
 
-# 纯规则模式（无需 LLM）
+# CLI 启动（纯规则模式）
+python -m attack_agent --config config/settings.json --max-cycles 12
+
+# CLI 启动（对接 HTTP 靶场）
+python -m attack_agent --provider-url http://127.0.0.1:8080
+
+# CLI 启动（接入 LLM）
+python -m attack_agent --config config/settings.json --model openai --verbose
+
+# 纯规则模式（无需 LLM，Python API）
 python -c "
 from attack_agent.platform import CompetitionPlatform
 from attack_agent.provider import InMemoryCompetitionProvider
@@ -26,7 +35,7 @@ platform = CompetitionPlatform(provider)
 platform.solve_all()
 "
 
-# 接入 LLM
+# 接入 LLM（Python API）
 pip install attack-agent[openai]   # 或 pip install openai>=1.0
 # 设置 OPENAI_API_KEY 后传入 model 参数即可启用双路径规划
 ```
@@ -46,6 +55,7 @@ pip install attack-agent[openai]   # 或 pip install openai>=1.0
 | 模块 | 文件 | 职责 |
 |------|------|------|
 | CompetitionPlatform | `platform.py` | 主入口，协调 5 层交互 |
+| CLI 入口 | `__main__.py` | `python -m attack_agent` 命令行接口 |
 | Dispatcher | `dispatcher.py` | 状态机调度，集成安全壳 |
 | EnhancedAPGPlanner | `enhanced_apg.py` | 双路径规划，路径选择/切换 |
 | ConstraintAwareReasoner | `constraint_aware_reasoner.py` | 约束感知推理，生成自由攻击计划 |
@@ -58,6 +68,7 @@ pip install attack-agent[openai]   # 或 pip install openai>=1.0
 | CodeSandbox | `apg.py` | 受限 Python 执行环境 |
 | AttackAgentConfig | `config.py` | JSON + dataclass 配置管理 |
 | Model Adapters | `model_adapter.py` | OpenAI/Anthropic 适配器 |
+| ObservationSummarizer | `observation_summarizer.py` | 观测 payload → 有限长度文本摘要 🆕 |
 
 ## Primitives (9)
 
@@ -88,7 +99,7 @@ pip install attack-agent[openai]   # 或 pip install openai>=1.0
 
 `config/settings.json` → `AttackAgentConfig.from_file()` 加载。子配置：PlatformConfig, DualPathConfig, PatternDiscoveryConfig, SemanticRetrievalConfig, SecurityConfig, MemoryConfig, LoggingConfig, ModelConfig。
 
-**注意：** Dispatcher 中 SecurityConstraints 目前硬编码（默认值与 SecurityConfig 不同步），这是已知问题。
+**SecurityConstraints 与 SecurityConfig 对齐：** `SecurityConstraints.from_config(SecurityConfig)` 是单一真实源，Dispatcher 和 Platform 均从 `AttackAgentConfig.security` 读取约束值。默认值已统一（`max_http_requests=30`, `max_program_steps=15`, `max_estimated_cost=50.0`）。
 
 ## Optional Dependencies
 
@@ -114,18 +125,18 @@ all        = ["openai>=1.0", "anthropic>=0.20", "requests>=2.28", "playwright>=1
 
 ## Known Limitations
 
-1. **PrimitiveAdapter 真实执行需要靶场 metadata 配置** — 无 config key 时只能走 metadata 回退
-2. **SecurityConstraints 硬编码** — Dispatcher 和 Platform 中约束未从 AttackAgentConfig.security 读取
-3. **browser-inspect 无 JS 执行** — 使用 stdlib HTMLParser，非真实浏览器；可选 Playwright 适配
-4. **语义检索仅 TF-IDF** — InMemoryVectorStore，无真正 embedding
-5. **模式图硬编码** — PatternLibrary 6 族关键词匹配，动态发现的模式未回注
-6. **无 CLI 入口** — 仅 Python API
+1. **PrimitiveAdapter 真实执行需要靶场 metadata 配置** — 无 config key 且 `step.parameters` 未提供时只能走 metadata 回退
+2. **browser-inspect 无 JS 执行** — 使用 stdlib HTMLParser，非真实浏览器；可选 Playwright 适配
+3. **语义检索仅 TF-IDF** — InMemoryVectorStore，无真正 embedding
+4. **模式图硬编码** — PatternLibrary 6 族关键词匹配，动态发现的模式未回注
+5. **LLM 无执行反馈闭环** — 规划器只读观测标签/计数（如 "已有观察: 3 个"），不读实际 HTTP 响应内容、发现端点等，LLM 无法迭代调整策略 🆕
+6. **原语未参数化** — 6/9 原语完全忽略 `step.parameters`，LLM 提示词中 `parameters: {}` 为空占位符，无法指定具体 URL/方法/body 🆕
 
 ## Development Conventions
 
 - 架构文档 (`docs/ARCHITECTURE.md`) 是唯一真实源，接口变更须先更新文档
 - 类型注解 + dataclass(slots=True) + PEP 8
-- 测试覆盖率 > 80%，165 个测试全通过
+- 测试覆盖率 > 80%，182 个测试全通过
 - 元数据回退路径必须保留（backward compat）
 - 安全壳验证在 runtime 执行前，critical 级违规阻止执行
 
@@ -138,7 +149,7 @@ tests/
 ├── test_state_graph.py        — 状态图服务
 ├── test_world_state.py        — 世界状态
 ├── test_provider.py           — Provider 协议
-├── test_constraints.py        — 安全壳
+├── test_constraints.py        — 安全壳 + SecurityConstraints 默认值对齐测试
 ├── test_enhanced_apg.py       — 增强规划器
 ├── test_constraint_aware_reasoner.py
 ├── test_dynamic_pattern_composer.py
@@ -146,10 +157,17 @@ tests/
 ├── test_path_selection.py
 ├── test_model_adapter.py
 ├── test_real_primitives.py    — 真实原语执行（38 个新测试）
+├── test_cli.py                — CLI 入口 + HTTP 集成测试
 ```
 
 ## Next Steps (Priority)
 
-- **P0:** SecurityConstraints 与 AttackAgentConfig.security 对齐
-- **P1:** CLI 入口 (`python -m attack_agent --config ...`), 真实靶场集成测试
+- **P0:** ~~SecurityConstraints 与 AttackAgentConfig.security 对齐~~ ✅ 已完成
+- **P1:** ~~CLI 入口 (`python -m attack_agent --config ...`), 真实靶场集成测试~~ ✅ 已完成
 - **P2:** 启发式自由探索模板(无 LLM 时), 模式回注机制, 接入 embedding 模型
+- **P3:** LLM 反馈闭环 + 原语参数化 — 让平台能开始解基础 web 类 CTF 题目 🆕
+  - ObservationSummarizer 新模块
+  - _resolve_*_specs() 接受 step.parameters
+  - _extract_current_state() 输出实际观测内容
+  - ReasoningContext 加 observation_summaries
+  - 安全壳参数 scope 验证

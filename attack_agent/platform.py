@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .apg import APGPlanner
+from .config import AttackAgentConfig
 from .constraint_aware_reasoner import ConstraintAwareReasoner, ConstraintContextBuilder
 from .constraints import LightweightSecurityShell, SecurityConstraints
 from .controller import Controller
@@ -20,25 +21,28 @@ class CompetitionPlatform:
     def __init__(self, provider: CompetitionProvider,
                  reasoner: HeuristicReasoner | None = None,
                  model: ReasoningModel | None = None,
-                 config: DualPathConfig | None = None) -> None:
+                 config: DualPathConfig | None = None,
+                 agent_config: AttackAgentConfig | None = None) -> None:
         self.provider = provider
         self.state_graph = StateGraphService()
         self.controller = Controller(provider, self.state_graph)
         self.runtime = WorkerRuntime()
 
+        # 从 AttackAgentConfig.security 构建 SecurityConstraints（单一真实源）
+        if agent_config is not None:
+            security_constraints = SecurityConstraints.from_config(agent_config.security)
+            dual_config = config or agent_config.dual_path
+        else:
+            security_constraints = SecurityConstraints()
+            dual_config = config or DualPathConfig()
+
         if model is not None:
             llm_reasoner = LLMReasoner(model)
-            security_constraints = SecurityConstraints(
-                max_program_steps=15,
-                require_observation_before_action=True,
-                max_estimated_cost=50.0,
-            )
             shell = LightweightSecurityShell(security_constraints)
             builder = ConstraintContextBuilder(security_constraints)
             constraint_reasoner = ConstraintAwareReasoner(model, builder, shell)
             semantic = SemanticRetrievalEngine()
             composer = DynamicPatternComposer()
-            dual_config = config or DualPathConfig()
             structured = APGPlanner(self.state_graph.episode_memory, reasoner=llm_reasoner)
             enhanced = EnhancedAPGPlanner(
                 structured_planner=structured,
@@ -52,7 +56,10 @@ class CompetitionPlatform:
             heuristic = reasoner or HeuristicReasoner()
             self.strategy = StrategyLayer(APGPlanner(self.state_graph.episode_memory, reasoner=heuristic))
 
-        self.dispatcher = Dispatcher(self.state_graph, self.runtime, self.strategy)
+        self.dispatcher = Dispatcher(
+            self.state_graph, self.runtime, self.strategy,
+            security_constraints=security_constraints,
+        )
 
     def bootstrap(self) -> list[str]:
         project_ids = self.controller.sync_challenges()
