@@ -20,6 +20,14 @@ from .dynamic_pattern_composer import (
     ParameterSpec,
 )
 from .semantic_retrieval import SemanticRetrievalEngine, SemanticRetrievalHit
+from .heuristic_free_exploration import HeuristicFreeExplorationPlanner
+from .pattern_injector import PatternInjector
+from .embedding_adapter import (
+    FallbackEmbeddingModel,
+    SentenceTransformerEmbeddingModel,
+    OpenAIEmbeddingModel,
+    build_embedding_from_config,
+)
 from .model_adapter import (
     OpenAIReasoningModel,
     AnthropicReasoningModel,
@@ -37,7 +45,7 @@ from .config import (
     LoggingConfig,
     ModelConfig,
 )
-from .platform_models import PathType, PlanningContext, DualPathConfig
+from .platform_models import PathType, PlanningContext, DualPathConfig, FreeExplorationPlanner, EmbeddingModel
 
 __all__ = [
     "CompetitionPlatform",
@@ -53,6 +61,8 @@ __all__ = [
     "ConstraintAwareReasoner",
     "ConstraintContext",
     "ConstraintContextBuilder",
+    "HeuristicFreeExplorationPlanner",
+    "PatternInjector",
     "PathSelectionStrategy",
     "PathSelectionFactors",
     "DynamicPatternComposer",
@@ -61,6 +71,10 @@ __all__ = [
     "ParameterSpec",
     "SemanticRetrievalEngine",
     "SemanticRetrievalHit",
+    "FallbackEmbeddingModel",
+    "SentenceTransformerEmbeddingModel",
+    "OpenAIEmbeddingModel",
+    "build_embedding_from_config",
     "OpenAIReasoningModel",
     "AnthropicReasoningModel",
     "build_model_from_config",
@@ -77,4 +91,6 @@ __all__ = [
     "PathType",
     "PlanningContext",
     "DualPathConfig",
+    "FreeExplorationPlanner",
+    "EmbeddingModel",
 ]

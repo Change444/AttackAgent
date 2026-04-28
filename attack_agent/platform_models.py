@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any
+from typing import Any, Protocol
 
 from .models import utc_now
 
@@ -307,3 +307,13 @@ class DualPathConfig:
     semantic_retrieval_limit: int = 5
     hybrid_score_alpha: float = 0.7
     hybrid_score_beta: float = 0.3
+
+
+class FreeExplorationPlanner(Protocol):
+    """自由探索规划器协议 — LLM 或启发式均可满足"""
+    def generate_constrained_plan(self, context: PlanningContext) -> ActionProgram | None: ...
+
+
+class EmbeddingModel(Protocol):
+    """向量嵌入模型协议"""
+    def embed(self, texts: list[str]) -> list[list[float]]: ...

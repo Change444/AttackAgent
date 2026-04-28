@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .models import new_id, utc_now
 from .platform_models import EpisodeEntry, PrimitiveActionStep
+
+if TYPE_CHECKING:
+    from .pattern_injector import PatternInjector
 
 
 @dataclass(slots=True)
@@ -110,10 +113,11 @@ class PatternDiscoveryAlgorithm:
 class DynamicPatternComposer:
     """动态模式组合器：从成功案例发现和应用模式"""
 
-    def __init__(self, discovery_threshold: int = 3) -> None:
+    def __init__(self, discovery_threshold: int = 3, injector: PatternInjector | None = None) -> None:
         self.discovery_threshold = discovery_threshold
         self._algorithm = PatternDiscoveryAlgorithm()
         self._patterns: dict[str, PatternTemplate] = {}
+        self._injector = injector
 
     def compose_pattern(self, steps: list[PrimitiveActionStep]) -> PatternTemplate:
         """从具体步骤抽象出模式模板"""
@@ -206,8 +210,10 @@ class DynamicPatternComposer:
         return patterns
 
     def store_pattern(self, pattern: PatternTemplate) -> None:
-        """存储发现的模式"""
+        """存储发现的模式，并回注到 PatternLibrary"""
         self._patterns[pattern.id] = pattern
+        if self._injector is not None:
+            self._injector.inject_pattern(pattern)
 
     def retrieve_patterns(self, context: dict) -> list[PatternTemplate]:
         """检索适用的模式"""

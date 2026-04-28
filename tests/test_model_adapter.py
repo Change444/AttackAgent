@@ -288,12 +288,12 @@ class TestPlatformWiring(unittest.TestCase):
         self.assertIsInstance(planner.reasoner, LLMReasoner)
 
     def test_backward_compat_with_reasoner_param(self):
-        """reasoner参数向后兼容"""
+        """reasoner参数向后兼容 — model=None 时现在也使用 EnhancedAPGPlanner"""
         from attack_agent.platform import CompetitionPlatform
         from attack_agent.platform_models import ChallengeDefinition
         from attack_agent.provider import InMemoryCompetitionProvider
         from attack_agent.reasoning import LLMReasoner, StaticReasoningModel
-        from attack_agent.apg import APGPlanner
+        from attack_agent.enhanced_apg import EnhancedAPGPlanner
 
         provider = InMemoryCompetitionProvider([
             ChallengeDefinition(id="c1", name="Test", category="web",
@@ -302,8 +302,8 @@ class TestPlatformWiring(unittest.TestCase):
         ])
         reasoner = LLMReasoner(StaticReasoningModel({"select_worker_profile": {"profile": "network"}}))
         platform = CompetitionPlatform(provider, reasoner=reasoner)
-        # Should use APGPlanner (not Enhanced), with the provided reasoner
-        self.assertIsInstance(platform.strategy.planner, APGPlanner)
+        # model=None now also uses EnhancedAPGPlanner with heuristic free-exploration
+        self.assertIsInstance(platform.strategy.planner, EnhancedAPGPlanner)
         self.assertIsInstance(platform.strategy.planner.reasoner, LLMReasoner)
 
 

@@ -204,18 +204,44 @@ class EpisodeMemory:
 
 
 class PatternLibrary:
+    def __init__(self) -> None:
+        self._dynamic_keywords: dict[str, tuple[str, ...]] = {}
+        self._dynamic_programs: dict[str, dict[PatternNodeKind, list[PrimitiveActionStep]]] = {}
+
+    def add_dynamic_family(self, family: str, keywords: tuple[str, ...]) -> None:
+        """Register a dynamic family discovered from patterns"""
+        self._dynamic_keywords[family] = keywords
+
+    def add_dynamic_program(self, family: str, kind: PatternNodeKind, steps: list[PrimitiveActionStep]) -> None:
+        """Register program steps for a dynamic family's node kind"""
+        if family not in self._dynamic_programs:
+            self._dynamic_programs[family] = {}
+        self._dynamic_programs[family][kind] = steps
+
+    def get_program_steps(self, family: str, kind: PatternNodeKind) -> list[PrimitiveActionStep]:
+        """Look up program steps: dynamic programs first, then hardcoded FAMILY_PROGRAMS"""
+        if family in self._dynamic_programs and kind in self._dynamic_programs[family]:
+            return list(self._dynamic_programs[family][kind])
+        if family in FAMILY_PROGRAMS and kind in FAMILY_PROGRAMS[family]:
+            return list(FAMILY_PROGRAMS[family][kind])
+        return []
+
     def build(self, project: ProjectSnapshot) -> PatternGraph:
         text = " ".join([project.challenge.name, project.challenge.description, project.challenge.category, " ".join(project.challenge.metadata.get("signals", []))])
-        family_scores = {family: self._score_family(text, family) for family in FAMILY_KEYWORDS}
+        # Merge hardcoded + dynamic keywords for scoring
+        all_keywords = dict(FAMILY_KEYWORDS)
+        all_keywords.update(self._dynamic_keywords)
+        family_scores = {family: self._score_family(text, family) for family in all_keywords}
         ordered = [family for family, _ in sorted(family_scores.items(), key=lambda item: item[1], reverse=True)]
         nodes: dict[str, PatternNode] = {}
         edges: list[PatternEdge] = []
         for family in ordered:
-            nodes[f"{family}:goal"] = PatternNode(id=f"{family}:goal", family=family, kind=PatternNodeKind.GOAL, label=f"{family} goal", keywords=FAMILY_KEYWORDS[family])
-            nodes[f"{family}:observe"] = PatternNode(id=f"{family}:observe", family=family, kind=PatternNodeKind.OBSERVATION_GATE, label=f"{family} observe", keywords=FAMILY_KEYWORDS[family])
-            nodes[f"{family}:act"] = PatternNode(id=f"{family}:act", family=family, kind=PatternNodeKind.ACTION_TEMPLATE, label=f"{family} act", keywords=FAMILY_KEYWORDS[family])
-            nodes[f"{family}:verify"] = PatternNode(id=f"{family}:verify", family=family, kind=PatternNodeKind.VERIFICATION_GATE, label=f"{family} verify", keywords=FAMILY_KEYWORDS[family])
-            nodes[f"{family}:fallback"] = PatternNode(id=f"{family}:fallback", family=family, kind=PatternNodeKind.FALLBACK, label=f"{family} fallback", keywords=FAMILY_KEYWORDS[family])
+            kw = all_keywords[family]
+            nodes[f"{family}:goal"] = PatternNode(id=f"{family}:goal", family=family, kind=PatternNodeKind.GOAL, label=f"{family} goal", keywords=kw)
+            nodes[f"{family}:observe"] = PatternNode(id=f"{family}:observe", family=family, kind=PatternNodeKind.OBSERVATION_GATE, label=f"{family} observe", keywords=kw)
+            nodes[f"{family}:act"] = PatternNode(id=f"{family}:act", family=family, kind=PatternNodeKind.ACTION_TEMPLATE, label=f"{family} act", keywords=kw)
+            nodes[f"{family}:verify"] = PatternNode(id=f"{family}:verify", family=family, kind=PatternNodeKind.VERIFICATION_GATE, label=f"{family} verify", keywords=kw)
+            nodes[f"{family}:fallback"] = PatternNode(id=f"{family}:fallback", family=family, kind=PatternNodeKind.FALLBACK, label=f"{family} fallback", keywords=kw)
             edges.extend(
                 [
                     PatternEdge(source=f"{family}:goal", target=f"{family}:observe", condition="start"),
@@ -229,7 +255,10 @@ class PatternLibrary:
 
     def _score_family(self, text: str, family: str) -> int:
         tokens = _tokenize(text)
-        return 1 + sum(1 for keyword in FAMILY_KEYWORDS[family] if keyword in tokens)
+        all_keywords = dict(FAMILY_KEYWORDS)
+        all_keywords.update(self._dynamic_keywords)
+        keywords = all_keywords.get(family, ())
+        return 1 + sum(1 for keyword in keywords if keyword in tokens)
 
 
 class CodeSandbox:
@@ -340,7 +369,7 @@ class APGPlanner:
                 steps=steps,
                 allowed_primitives=list(dict.fromkeys(step.primitive for step in steps)),
                 verification_rules=["flag_pattern", "novelty_positive"],
-                required_profile=FAMILY_PROFILES[family],
+                required_profile=FAMILY_PROFILES.get(family, WorkerProfile.HYBRID),
                 memory_refs=[hit.episode_id for hit in memory_hits],
                 rationale=decision.rationale,
                 planner_source=decision.source,
@@ -371,7 +400,9 @@ class APGPlanner:
             ]
         )
         tokens = set(_tokenize(text))
-        for family, keywords in FAMILY_KEYWORDS.items():
+        all_keywords = dict(FAMILY_KEYWORDS)
+        all_keywords.update(self.pattern_library._dynamic_keywords)
+        for family, keywords in all_keywords.items():
             scores[family] += sum(1.0 for keyword in keywords if keyword in tokens)
         for hit in memory_hits:
             for family in hit.pattern_families:
@@ -390,12 +421,15 @@ class APGPlanner:
             node = self._next_node(record.pattern_graph, family)
             if node is None:
                 continue
+            steps = self.pattern_library.get_program_steps(family, node.kind)
+            if not steps:
+                continue
             candidates.append(
                 PlanCandidate(
                     family=family,
                     node_id=node.id,
                     node_kind=node.kind.value,
-                    steps=list(FAMILY_PROGRAMS[family][node.kind]),
+                    steps=steps,
                     score=score,
                 )
             )
@@ -450,7 +484,11 @@ def build_episode_entry(record, program: ActionProgram, outcome: ActionOutcome, 
 
 
 def _tokenize(text: str) -> list[str]:
-    return re.findall(r"[a-zA-Z0-9_-]+", text.lower())
+    """分词：CJK 整词 + ASCII token"""
+    lowered = text.lower()
+    cjk = re.findall(r"[一-鿿㐀-䶿豈-﫿]+", lowered)
+    ascii_tokens = re.findall(r"[a-z0-9_-]+", lowered)
+    return cjk + ascii_tokens
 
 
 class _SafeAstValidator(ast.NodeVisitor):

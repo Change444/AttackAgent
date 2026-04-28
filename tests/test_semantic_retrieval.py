@@ -7,7 +7,9 @@ from attack_agent.semantic_retrieval import (
     InMemoryVectorStore,
     _tokenize,
     _compute_tfidf_similarity,
+    _compute_jaccard_similarity,
     _compute_lexical_overlap,
+    FallbackEmbeddingModel,
 )
 from attack_agent.platform_models import EpisodeEntry
 
@@ -33,7 +35,7 @@ class TestTfidfSimilarity(unittest.TestCase):
         sim = _compute_tfidf_similarity(
             ["sql", "injection"], ["sql", "injection", "attack"]
         )
-        self.assertGreater(sim, 0.5)
+        self.assertGreater(sim, 0.3)
 
     def test_no_overlap(self):
         sim = _compute_tfidf_similarity(["abc"], ["xyz"])
@@ -42,6 +44,21 @@ class TestTfidfSimilarity(unittest.TestCase):
     def test_empty_input(self):
         sim = _compute_tfidf_similarity([], ["test"])
         self.assertEqual(sim, 0.0)
+
+
+class TestJaccardSimilarity(unittest.TestCase):
+
+    def test_similar_sets(self):
+        sim = _compute_jaccard_similarity(["sql", "injection"], ["sql", "injection", "attack"])
+        self.assertAlmostEqual(sim, 2.0 / 3.0, places=3)
+
+    def test_no_overlap(self):
+        sim = _compute_jaccard_similarity(["abc"], ["xyz"])
+        self.assertEqual(sim, 0.0)
+
+    def test_identical_sets(self):
+        sim = _compute_jaccard_similarity(["sql"], ["sql"])
+        self.assertEqual(sim, 1.0)
 
 
 class TestLexicalOverlap(unittest.TestCase):

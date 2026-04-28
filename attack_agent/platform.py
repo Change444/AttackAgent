@@ -8,11 +8,14 @@ from .controller import Controller
 from .dispatcher import Dispatcher
 from .dynamic_pattern_composer import DynamicPatternComposer
 from .enhanced_apg import EnhancedAPGPlanner
+from .heuristic_free_exploration import HeuristicFreeExplorationPlanner
 from .observation_summarizer import ObservationSummarizer, ObservationSummarizerConfig
+from .pattern_injector import PatternInjector
 from .platform_models import DualPathConfig, PatternNodeKind, ProjectStage
 from .provider import CompetitionProvider
 from .reasoning import HeuristicReasoner, LLMReasoner, ReasoningModel
-from .semantic_retrieval import SemanticRetrievalEngine
+from .embedding_adapter import build_embedding_from_config
+from .semantic_retrieval import SemanticRetrievalEngine, InMemoryVectorStore
 from .runtime import WorkerRuntime
 from .state_graph import StateGraphService
 from .strategy import StrategyLayer
@@ -33,13 +36,22 @@ class CompetitionPlatform:
         if agent_config is not None:
             security_constraints = SecurityConstraints.from_config(agent_config.security)
             dual_config = config or agent_config.dual_path
-            # Build ObservationSummarizer from config budget
             budget_chars = agent_config.model.observation_summary_budget_chars
             summarizer = ObservationSummarizer(ObservationSummarizerConfig(max_total_chars=budget_chars))
+            embedding_model = build_embedding_from_config(
+                agent_config.model, agent_config.semantic_retrieval.embedding_model
+            )
+            sem_config = agent_config.semantic_retrieval
+            semantic = SemanticRetrievalEngine(
+                vector_store=InMemoryVectorStore(),
+                hybrid_alpha=sem_config.hybrid_alpha,
+                embedding_model=embedding_model,
+            )
         else:
             security_constraints = SecurityConstraints()
             dual_config = config or DualPathConfig()
             summarizer = ObservationSummarizer()
+            semantic = SemanticRetrievalEngine()
 
         # Share summarizer to StateGraphService
         self.state_graph.observation_summarizer = summarizer
@@ -49,9 +61,9 @@ class CompetitionPlatform:
             shell = LightweightSecurityShell(security_constraints)
             builder = ConstraintContextBuilder(security_constraints)
             constraint_reasoner = ConstraintAwareReasoner(model, builder, shell, summarizer=summarizer)
-            semantic = SemanticRetrievalEngine()
-            composer = DynamicPatternComposer()
             structured = APGPlanner(self.state_graph.episode_memory, reasoner=llm_reasoner, summarizer=summarizer)
+            injector = PatternInjector(structured.pattern_library)
+            composer = DynamicPatternComposer(injector=injector)
             enhanced = EnhancedAPGPlanner(
                 structured_planner=structured,
                 free_exploration_planner=constraint_reasoner,
@@ -62,7 +74,26 @@ class CompetitionPlatform:
             self.strategy = StrategyLayer(enhanced)
         else:
             heuristic = reasoner or HeuristicReasoner()
-            self.strategy = StrategyLayer(APGPlanner(self.state_graph.episode_memory, reasoner=heuristic, summarizer=summarizer))
+            shell = LightweightSecurityShell(security_constraints)
+            builder = ConstraintContextBuilder(security_constraints)
+            structured = APGPlanner(self.state_graph.episode_memory, reasoner=heuristic, summarizer=summarizer)
+            injector = PatternInjector(structured.pattern_library)
+            composer = DynamicPatternComposer(injector=injector)
+            heuristic_free_planner = HeuristicFreeExplorationPlanner(
+                context_builder=builder,
+                validator=shell,
+                pattern_composer=composer,
+                episode_memory=self.state_graph.episode_memory,
+                summarizer=summarizer,
+            )
+            enhanced = EnhancedAPGPlanner(
+                structured_planner=structured,
+                free_exploration_planner=heuristic_free_planner,
+                semantic_retrieval=semantic,
+                pattern_composer=heuristic_free_planner.pattern_composer,
+                config=dual_config,
+            )
+            self.strategy = StrategyLayer(enhanced)
 
         self.dispatcher = Dispatcher(
             self.state_graph, self.runtime, self.strategy,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .apg import APGPlanner
-from .constraint_aware_reasoner import ConstraintAwareReasoner, ConstraintContext
+from .constraint_aware_reasoner import ConstraintContextBuilder
 from .dynamic_pattern_composer import DynamicPatternComposer, PatternTemplate
 from .models import new_id
 from .observation_summarizer import ObservationSummarizer
@@ -12,6 +12,7 @@ from .platform_models import (
     ActionProgram,
     DualPathConfig,
     EventType,
+    FreeExplorationPlanner,
     PathType,
     PatternGraph,
     PatternNodeKind,
@@ -28,7 +29,7 @@ class EnhancedAPGPlanner:
 
     def __init__(self,
                  structured_planner: APGPlanner,
-                 free_exploration_planner: ConstraintAwareReasoner,
+                 free_exploration_planner: FreeExplorationPlanner,
                  semantic_retrieval: SemanticRetrievalEngine,
                  pattern_composer: DynamicPatternComposer,
                  config: DualPathConfig | None = None) -> None:
@@ -99,7 +100,7 @@ class EnhancedAPGPlanner:
         success_rate = 0.0
         memory = self.structured_planner.memory
         if memory.entries:
-            successful = [e for e in memory.entries.values() if e.success]
+            successful = [e for e in memory.entries if e.success]
             success_rate = len(successful) / len(memory.entries)
 
         complexity = self._compute_complexity(record)

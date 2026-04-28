@@ -1,7 +1,7 @@
 # AttackAgent 项目架构文档
 
-**版本：** 3.4
-**最后更新：** 2026-04-27
+**版本：** 3.5
+**最后更新：** 2026-04-28
 **状态：** 活跃开发中
 **目的：** 本文档为 AttackAgent 项目的唯一真实架构源，所有开发决策和实施必须以此文档为准。
 
@@ -92,15 +92,17 @@
 │  └────────────────────────────────────────────────────┘  │
 │                                                              │
 │  ┌──────────────────────────┐  ┌─────────────────────────┐ │
-│  │  结构化路径              │  │  自由探索路径 🆕        │ │
+│  │  结构化路径              │  │  自由探索路径 ✅        │ │
 │  │  Structured Path        │  │  Free Exploration Path  │ │
 │  │                          │  │                         │ │
-│  │  - PatternLibrary       │  │  - ConstraintAware      │ │
-│  │  - HeuristicReasoner    │  │    Reasoner             │ │
-│  │  - LLMReasoner (选择题)  │  │  - DynamicPattern       │ │
-│  │  - EpisodeMemory        │  │    Composer            │ │
-│  │  - 词汇检索             │  │  - SemanticRetrieval    │ │
-│  │                          │  │    Engine              │ │
+│  │  - PatternLibrary       │  │  LLM: ConstraintAware   │ │
+│  │  - HeuristicReasoner    │  │       Reasoner          │ │
+│  │  - LLMReasoner (选择题)  │  │  启发式: HeuristicFree  │ │
+│  │  - EpisodeMemory        │  │       ExplorationPlanner│ │
+│  │  - 词汇检索             │  │  - DynamicPattern       │ │
+│  │                          │  │    Composer            │ │
+│  │                          │  │  - SemanticRetrieval    │ │
+│  │                          │  │    Engine (TF-IDF+emb) │ │
 │  └──────────────────────────┘  └─────────────────────────┘ │
 └─────────────────────────────────────────────────────────┘
                            ↓
@@ -132,9 +134,11 @@
 规划请求 (Planning Request)
            ↓
 ┌─────────────────────────────────────────────┐
-│  DualPathPlanner                            │
+│  EnhancedAPGPlanner                          │
 │  - 评估规划上下文                            │
 │  - 选择路径类型                             │
+│  - model=None: HeuristicFreeExploration     │
+│  - model=xxx: ConstraintAwareReasoner       │
 └─────────────────────────────────────────────┘
            ↓
     ┌──────┴──────┐
@@ -792,7 +796,7 @@ class PatternDiscoveryAlgorithm:
 **文件位置：** `attack_agent/semantic_retrieval.py` 🆕
 
 **职责：**
-- 基于语义相似性的历史案例检索
+- 基于 TF-IDF + embedding 向量相似性的历史案例检索
 - 支持向量检索和混合检索
 - 提供检索质量评分
 
@@ -801,52 +805,38 @@ class PatternDiscoveryAlgorithm:
 class SemanticRetrievalEngine:
     def __init__(self,
                  vector_store: VectorStore | None = None,
-                 hybrid_alpha: float = 0.7):
-        """初始化语义检索引擎"""
+                 hybrid_alpha: float = 0.7,
+                 embedding_model: EmbeddingModel | None = None):
+        """初始化语义检索引擎，embedding_model 为 None 时使用 FallbackEmbeddingModel"""
 
     def search(self, query: str, limit: int = 5) -> list[SemanticRetrievalHit]:
-        """语义检索"""
+        """语义检索：向量 + 词汇混合"""
 
     def index_episode(self, episode: EpisodeEntry) -> None:
-        """索引新案例"""
-
-    def update_index(self, episodes: list[EpisodeEntry]) -> None:
-        """批量更新索引"""
+        """索引新案例 — embed + store + update IDF"""
 
     def compute_similarity(self, query: str, episode: EpisodeEntry) -> float:
-        """计算语义相似度"""
+        """计算语义相似度（TF-IDF cosine similarity）"""
 ```
 
-**检索命中数据结构：**
-```python
-@dataclass
-class SemanticRetrievalHit:
-    """语义检索命中"""
-    episode_id: str
-    summary: str
-    pattern_families: list[str]
-    stop_reason: str
+**InMemoryVectorStore 修正 ✅：**
+- 实际存储向量 + cosine similarity search
+- 空向量时回退 metadata score（向后兼容）
+- `_cosine_similarity()` helper 使用 stdlib math
 
-    # 语义相关字段
-    semantic_similarity: float  # 语义相似度
-    lexical_overlap: float      # 词汇重叠度
-    hybrid_score: float         # 混合评分
-    confidence: float           # 整体置信度
-    relevance_explanation: str  # 相关性解释
-```
+**TF-IDF 修正 ✅：**
+- `_compute_tfidf_similarity()` 现为真正的 TF-IDF（Counter TF + cosine similarity on TF-IDF vectors）
+- `_compute_jaccard_similarity()` 保留原实现（原 _compute_tfidf_similarity 实际是 Jaccard）
+- `_term_frequencies()` helper 计算归一化词频
 
-**混合检索策略：**
-```python
-class HybridRetrievalStrategy:
-    def search(self, query: str, episodes: list[EpisodeEntry]) -> list[SemanticRetrievalHit]:
-        """混合检索：语义 + 词汇"""
+**CJK tokenize ✅：**
+- `_tokenize()` 使用双 regex：CJK `[一-鿿㐀-䶿豈-﫿]+` + ASCII `[a-z0-9]+`
+- CJK 整词匹配（非分词），ASCII 逐词匹配
 
-    def compute_hybrid_score(self, semantic_sim: float, lexical_overlap: float) -> float:
-        """混合评分计算：α * semantic_sim + β * lexical_overlap"""
-
-    def rank_hits(self, hits: list[SemanticRetrievalHit]) -> list[SemanticRetrievalHit]:
-        """重新排序检索结果"""
-```
+**混合检索策略 ✅：**
+- `HybridRetrievalStrategy.search()` 接受 `idf` 参数，使用修正的 `_compute_tfidf_similarity`
+- `SemanticRetrievalEngine.search()` 合并向量检索 + 词汇检索结果
+- `_merge_results()` 重新加权 hybrid_score
 
 #### 3.3.4 路径选择模块 🆕
 
@@ -913,6 +903,124 @@ def select_path(self, context: PlanningContext) -> PathType:
 
     # 5. 混合策略
     return self._mixed_selection(context, self.config.structured_path_weight)
+```
+
+#### 3.3.5 启发式自由探索模块 ✅
+
+##### HeuristicFreeExplorationPlanner
+
+**文件位置：** `attack_agent/heuristic_free_exploration.py` ✅
+
+**职责：**
+- 无 LLM 时生成自由探索计划
+- 基于 FAMILY_KEYWORDS 评分选择族
+- 从 FAMILY_PROGRAMS 组装观察-行动-验证步骤
+- 从 DynamicPatternComposer 获取动态模式补充
+- 从 EpisodeMemory 获取历史经验补充
+
+**核心接口：**
+```python
+class HeuristicFreeExplorationPlanner:
+    def __init__(self,
+                 context_builder: ConstraintContextBuilder,
+                 validator: LightweightSecurityShell,
+                 pattern_composer: DynamicPatternComposer,
+                 episode_memory: EpisodeMemory,
+                 summarizer: ObservationSummarizer | None = None):
+        """初始化启发式自由探索规划器"""
+
+    def generate_constrained_plan(self, context: PlanningContext) -> ActionProgram | None:
+        """生成启发式自由探索计划"""
+```
+
+**规划算法：**
+1. 构建 ConstraintContext 获取 max_steps 限制
+2. 对 challenge text 做 FAMILY_KEYWORDS + _dynamic_keywords 评分
+3. EpisodeMemory.search() enrich 分数
+4. 选择最佳族；score <= 1 时返回 None
+5. 从 FAMILY_PROGRAMS 取 observe + act + verify 步骤
+6. DynamicPatternComposer.retrieve_patterns() 补充动态模式
+7. observation_before_action 时重排步骤
+8. 截断到 max_steps
+9. 产出 `ActionProgram(planner_source="free_exploration_heuristic")`
+
+**model=None 行为变化：** `CompetitionPlatform.__init__` model=None 分支现在构建 `EnhancedAPGPlanner(APGPlanner + HeuristicFreeExplorationPlanner)`，而非仅 `APGPlanner`。
+
+#### 3.3.6 模式回注模块 ✅
+
+##### PatternInjector
+
+**文件位置：** `attack_agent/pattern_injector.py` ✅
+
+**职责：**
+- 将 PatternTemplate 转换为 PatternLibrary 可消费的形式
+- 动态族命名 (`dynamic:<name>` 前缀)
+- 步骤模板映射到 PatternNodeKind
+
+**核心接口：**
+```python
+class PatternInjector:
+    def __init__(self, pattern_library: PatternLibrary):
+        """初始化模式注入器"""
+
+    def inject_pattern(self, pattern: PatternTemplate) -> str:
+        """将 PatternTemplate 注入到 PatternLibrary 的动态族中"""
+```
+
+**步骤映射算法 `_map_steps_to_node_kinds()`：**
+- 1-2 步 → 全部到 OBSERVATION_GATE
+- 3-4 步 → 首→OBSERVATION_GATE, 中→ACTION_TEMPLATE, 末→VERIFICATION_GATE
+- 5+ 步 → 前2→OBSERVATION_GATE, 中间→ACTION_TEMPLATE, 最后2→VERIFICATION_GATE
+- 总是添加 FALLBACK 步骤
+
+**PatternLibrary 扩展：**
+```python
+class PatternLibrary:
+    def __init__(self) -> None:
+        self._dynamic_keywords: dict[str, tuple[str, ...]] = {}
+        self._dynamic_programs: dict[str, dict[PatternNodeKind, list[PrimitiveActionStep]]] = {}
+
+    def add_dynamic_family(self, family, keywords): ...
+    def add_dynamic_program(self, family, kind, steps): ...
+    def get_program_steps(self, family, kind) -> list[PrimitiveActionStep]: ...
+```
+
+**回注触发：** `DynamicPatternComposer.store_pattern()` 在 `injector` 参数存在时自动调用 `injector.inject_pattern()`。
+
+#### 3.3.7 Embedding 模型适配 ✅
+
+##### EmbeddingModel Protocol
+
+**文件位置：** `attack_agent/platform_models.py` ✅
+
+```python
+class EmbeddingModel(Protocol):
+    def embed(self, texts: list[str]) -> list[list[float]]: ...
+```
+
+##### FallbackEmbeddingModel
+
+**文件位置：** `attack_agent/semantic_retrieval.py` / `attack_agent/embedding_adapter.py` ✅
+
+返回空向量列表，无 embedding 包时引擎回退到词汇检索。
+
+##### SentenceTransformerEmbeddingModel
+
+**文件位置：** `attack_agent/embedding_adapter.py` ✅
+
+惰性导入 `sentence_transformers`，首次 `embed()` 时加载模型。
+
+##### OpenAIEmbeddingModel
+
+**文件位置：** `attack_agent/embedding_adapter.py` ✅
+
+惰性导入 `openai`，使用 `client.embeddings.create()` API。
+
+##### build_embedding_from_config()
+
+```python
+def build_embedding_from_config(model_config, embedding_model_name) -> EmbeddingModel:
+    """优先 OpenAI → sentence-transformers → Fallback"""
 ```
 
 ### 3.4 执行层模块
@@ -2076,6 +2184,22 @@ class AttackAgentConfig:
 - [x] 安全壳参数验证 — `_check_parameter_scope()` 验证 `step.parameters` 中 URL scope ✅
 - [x] FAMILY_PROGRAMS 保守参数化 — 添加默认 method 参数 ✅
 
+#### 阶段8：P2 启发式自由探索 + 模式回注 + Embedding 接入 ✅
+
+- [x] HeuristicFreeExplorationPlanner — 无 LLM 时基于模式模板生成自由探索计划 ✅
+- [x] FreeExplorationPlanner Protocol — model=None 时启用双路径 ✅
+- [x] PatternInjector — 动态模式回注到 PatternLibrary ✅
+- [x] PatternLibrary._dynamic_keywords + _dynamic_programs — 接受动态族 ✅
+- [x] APGPlanner._plan_candidates 使用 get_program_steps() ✅
+- [x] DynamicPatternComposer.store_pattern() 触发回注 ✅
+- [x] FallbackEmbeddingModel / SentenceTransformerEmbeddingModel / OpenAIEmbeddingModel ✅
+- [x] InMemoryVectorStore 真实 cosine similarity search ✅
+- [x] _compute_tfidf_similarity 修正为真实 TF-IDF ✅
+- [x] _compute_jaccard_similarity 保留原实现 ✅
+- [x] _tokenize() CJK + ASCII 双 regex ✅
+- [x] SemanticRetrievalEngine 接受 embedding_model 参数 ✅
+- [x] SemanticRetrievalConfig wiring 到 SemanticRetrievalEngine ✅
+
 ### 8.2 开发优先级
 
 | 优先级 | 模块 | 预计工作量 | 依赖 | 状态 |
@@ -2088,7 +2212,7 @@ class AttackAgentConfig:
 | P1 | DynamicPatternComposer | 4天 | EnhancedAPGPlanner | ✅ 完成 |
 | P1 | SemanticRetrievalEngine | 5天 | 向量模型 | ✅ 完成 |
 | P1 | CLI 入口 + 集成测试 | 2天 | AttackAgentConfig | ✅ 完成 |
-| P2 | 自适应优化 | 3天 | 以上所有 | 待开发 |
+| P2 | 启发式自由探索 + 模式回注 + Embedding 接入 | 5天 | 以上所有 | ✅ 完成 |
 | P3 | LLM 反馈闭环 + 原语参数化 | 4天 | P2 | ✅ 完成 |
 
 ### 8.3 里程碑
@@ -2101,7 +2225,8 @@ class AttackAgentConfig:
 | M4 | 语义检索集成 | 3.5周 | ✅ 完成 |
 | M5 | 真实 PrimitiveAdapter | 4.5周 | ✅ 完成 |
 | M6 | LLM 反馈闭环 + 原语参数化 | 5周 | ✅ 完成 |
-| M7 | 完整架构验证 | 6周 | 待开发 |
+| M7 | P2 启发式自由探索 + 模式回注 + Embedding | 6周 | ✅ 完成 |
+| M8 | 完整架构验证 | 7周 | 待开发 |
 
 ---
 
@@ -2152,6 +2277,24 @@ class AttackAgentConfig:
 - [x] 安全壳外部 URL 产生 critical 违规正常
 - [x] FAMILY_PROGRAMS 默认 method 参数正常
 
+#### P2 启发式自由探索 + 模式回注 + Embedding 验收 ✅
+- [x] HeuristicFreeExplorationPlanner 关键词匹配生成计划正常
+- [x] HeuristicFreeExplorationPlanner 无匹配时返回 None 正常
+- [x] HeuristicFreeExplorationPlanner planner_source == "free_exploration_heuristic"
+- [x] model=None 时 CompetitionPlatform 创建 EnhancedAPGPlanner 正常
+- [x] PatternInjector.inject_pattern() 创建动态族正常
+- [x] PatternLibrary.build() 包含动态族正常
+- [x] APGPlanner._plan_candidates 使用 get_program_steps() 正常
+- [x] DynamicPatternComposer.store_pattern() 触发回注正常
+- [x] InMemoryVectorStore cosine similarity 搜索正常
+- [x] InMemoryVectorStore 空向量回退 metadata score 正常（向后兼容）
+- [x] _tokenize() CJK + ASCII 双 regex 正常
+- [x] _compute_tfidf_similarity 真实 TF-IDF 正常
+- [x] _compute_jaccard_similarity 保留原实现正常
+- [x] SemanticRetrievalEngine 接受 embedding_model 正常
+- [x] SemanticRetrievalConfig wiring 到引擎正常
+- [x] FallbackEmbeddingModel 无 embedding 包时回退正常
+
 ### 9.2 性能验收
 
 | 指标 | 目标 | 测量方法 |
@@ -2192,11 +2335,11 @@ attack_agent/
 ├── state_graph.py           # 状态图服务
 ├── runtime.py               # 运行时执行 (PrimitiveAdapter + HttpSessionManager 🆕)
 ├── strategy.py              # 策略层
-├── apg.py                   # APG 规划器 (CodeSandbox 🆕)
+├── apg.py                   # APG 规划器 (CodeSandbox + PatternLibrary._dynamic ✅)
 ├── reasoning.py             # 推理器
 ├── constraints.py           # 约束验证 ✅
 ├── models.py                # 基础模型
-├── platform_models.py       # 平台模型 (TaskBundle.completed_observations 🆕)
+├── platform_models.py       # 平台模型 (FreeExplorationPlanner + EmbeddingModel Protocol ✅)
 ├── world_state.py           # 世界状态
 ├── compilers.py             # 编译器
 ├── console.py               # 控制台
@@ -2206,8 +2349,11 @@ attack_agent/
 ├── observation_summarizer.py # 观测摘要器 🆕
 ├── enhanced_apg.py          # 增强规划器 ✅
 ├── constraint_aware_reasoner.py  # 约束感知推理器 ✅
+├── heuristic_free_exploration.py # 启发式自由探索规划器 ✅
+├── pattern_injector.py      # 模式回注器 ✅
 ├── dynamic_pattern_composer.py  # 动态模式组合器 🆕
-├── semantic_retrieval.py    # 语义检索引擎 🆕
+├── semantic_retrieval.py    # 语义检索引擎 (TF-IDF+embedding+CJK ✅)
+├── embedding_adapter.py     # Embedding 模型适配器 ✅
 └── path_selection.py        # 路径选择策略 🆕
 
 config/
@@ -2225,8 +2371,11 @@ tests/
 ├── test_constraints.py      # 约束测试 ✅
 ├── test_enhanced_apg.py     # 增强规划器测试 🆕
 ├── test_constraint_aware_reasoner.py  # 约束推理测试 🆕
+├── test_heuristic_free_exploration.py # 启发式自由探索测试 ✅
+├── test_pattern_injector.py # 模式回注测试 ✅
 ├── test_dynamic_pattern_composer.py   # 模式组合测试 🆕
 ├── test_semantic_retrieval.py         # 语义检索测试 🆕
+├── test_embedding_adapter.py          # Embedding 适配器测试 ✅
 ├── test_path_selection.py            # 路径选择测试 🆕
 ├── test_real_primitives.py           # 真实原始动作测试 🆕 (38 tests)
 ├── test_cli.py                       # CLI 入口 + HTTP 集成测试 🆕
@@ -2284,11 +2433,24 @@ data/
 | _PRIMITIVE_PARAM_KEYS | 原语到允许参数键白名单，用于 _parse_plan_response() 过滤 | 🆕 |
 | observation_summaries | ReasoningContext 新增字段，注入观测内容摘要给 LLM | 🆕 |
 | ModelConfig | 模型配置子配置，含 provider/model_name/observation_summary_budget_chars | 🆕 |
+| HeuristicFreeExplorationPlanner | 启发式自由探索规划器，无 LLM 时基于模式模板生成自由探索计划 | ✅ |
+| FreeExplorationPlanner | 自由探索规划器 Protocol，LLM 或启发式均可满足 | ✅ |
+| EmbeddingModel | 向量嵌入模型 Protocol，embed(texts) -> vectors | ✅ |
+| FallbackEmbeddingModel | 无 embedding 包时返回空向量的回退实现 | ✅ |
+| SentenceTransformerEmbeddingModel | sentence-transformers embedding adapter，惰性导入 | ✅ |
+| OpenAIEmbeddingModel | OpenAI embeddings API adapter，惰性导入 | ✅ |
+| PatternInjector | 模式回注器，将 PatternTemplate 注入 PatternLibrary 动态族 | ✅ |
+| dynamic:<name> | 动态族命名前缀，区分回注模式与硬编码族 | ✅ |
+| _compute_jaccard_similarity | Jaccard similarity on token sets（原 _compute_tfidf_similarity 实现） | ✅ |
+| _compute_tfidf_similarity | 真实 TF-IDF cosine similarity（Counter TF + IDF） | ✅ |
+| _cosine_similarity | 余弦相似度 helper，用于 InMemoryVectorStore.search() | ✅ |
+| _tokenize | CJK + ASCII 双 regex 分词，支持中文整词匹配 | ✅ |
 
 ### C. 版本历史
 
 | 版本 | 日期 | 变更说明 |
 |------|------|----------|
+| 3.5 | 2026-04-28 | P2 启发式自由探索 + 模式回注 + Embedding 接入：HeuristicFreeExplorationPlanner, FreeExplorationPlanner Protocol, PatternInjector + PatternLibrary 动态族, EmbeddingModel Protocol + adapters, InMemoryVectorStore cosine similarity, TF-IDF 修正, CJK tokenize, SemanticRetrievalConfig wiring |
 | 3.4 | 2026-04-27 | LLM 反馈闭环 + 原语参数化：ObservationSummarizer, step.parameters 参数化, ConstraintAwareReasoner enrichment, ReasoningContext.observation_summaries, 安全壳参数 scope 验证, FAMILY_PROGRAMS 保守参数化 |
 | 3.3 | 2026-04-27 | 记录 LLM 反馈闭环缺失 + 原语未参数化问题，规划阶段7实施方案 |
 | 3.2 | 2026-04-27 | CLI 入口 (`python -m attack_agent`)，AttackAgentConfig.from_defaults()，真实靶场 HTTP 集成测试 |
@@ -2300,5 +2462,5 @@ data/
 ---
 
 **文档维护者：** AttackAgent 开发团队
-**最后审核：** 2026-04-27
-**下次审核：** P2 (自适应优化) 启动时
+**最后审核：** 2026-04-28
+**下次审核：** M8 (完整架构验证) 启动时

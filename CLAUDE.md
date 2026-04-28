@@ -9,7 +9,7 @@ AttackAgent 是一个面向授权靶场和 CTF 竞赛的渗透测试 Agent。核
 ## Quick Start
 
 ```bash
-# 运行全部测试（182 个）
+# 运行全部测试（226 个）
 python -m unittest discover tests/
 
 # CLI 启动（纯规则模式）
@@ -58,10 +58,13 @@ pip install attack-agent[openai]   # 或 pip install openai>=1.0
 | CLI 入口 | `__main__.py` | `python -m attack_agent` 命令行接口 |
 | Dispatcher | `dispatcher.py` | 状态机调度，集成安全壳 |
 | EnhancedAPGPlanner | `enhanced_apg.py` | 双路径规划，路径选择/切换 |
-| ConstraintAwareReasoner | `constraint_aware_reasoner.py` | 约束感知推理，生成自由攻击计划 |
+| ConstraintAwareReasoner | `constraint_aware_reasoner.py` | 约束感知推理，LLM 驱动自由攻击计划 |
+| HeuristicFreeExplorationPlanner | `heuristic_free_exploration.py` | 启发式自由探索，无 LLM 时生成自由攻击计划 |
 | PathSelectionStrategy | `path_selection.py` | 根据置信度/复杂度选择路径 |
+| PatternInjector | `pattern_injector.py` | 动态模式回注到 PatternLibrary |
 | DynamicPatternComposer | `dynamic_pattern_composer.py` | 从成功案例发现攻击模式 |
-| SemanticRetrievalEngine | `semantic_retrieval.py` | TF-IDF 混合检索历史经验 |
+| SemanticRetrievalEngine | `semantic_retrieval.py` | TF-IDF + embedding 混合检索历史经验 |
+| Embedding adapters | `embedding_adapter.py` | OpenAI/SentenceTransformer/Fallback embedding 模型 |
 | LightweightSecurityShell | `constraints.py` | 轻量级安全壳，执行前验证 + `_check_parameter_scope()` 验证 `step.parameters` URL |
 | WorkerRuntime | `runtime.py` | 执行 ActionProgram，9 个原语 |
 | HttpSessionManager | `runtime.py` | Cookie 持久化，redirect 跟随 |
@@ -111,18 +114,21 @@ pip install attack-agent[openai]   # 或 pip install openai>=1.0
 [project.optional-dependencies]
 openai     = ["openai>=1.0"]
 anthropic  = ["anthropic>=0.20"]
+embeddings = ["sentence-transformers>=2.2"]
 http       = ["requests>=2.28"]       # http-request 增强（当前使用 urllib）
 browser    = ["playwright>=1.40"]     # 真实浏览器（当前使用 stdlib HTMLParser）
 all-models = ["openai>=1.0", "anthropic>=0.20"]
-all        = ["openai>=1.0", "anthropic>=0.20", "requests>=2.28", "playwright>=1.40"]
+all        = ["openai>=1.0", "anthropic>=0.20", "sentence-transformers>=2.2", "requests>=2.28", "playwright>=1.40"]
 ```
 
 惰性导入模式：model_adapter.py 检测 openai/anthropic 是否可导入，不可用则返回 None。
 
 ## Dual-Path Planning
 
-- **model=None → APGPlanner(HeuristicReasoner)** — 纯规则，结构化路径
-- **model=xxx → EnhancedAPGPlanner** — 双路径自动切换
+- **model=None → EnhancedAPGPlanner(APGPlanner + HeuristicFreeExplorationPlanner)** — 纯规则，双路径自动切换
+  - 结构化路径：HeuristicReasoner 候选选择
+  - 自由探索路径：HeuristicFreeExplorationPlanner 从 FAMILY_PROGRAMS + 动态模式生成计划
+- **model=xxx → EnhancedAPGPlanner(APGPlanner + ConstraintAwareReasoner)** — 双路径自动切换
   - 结构化路径：LLMReasoner 候选选择
   - 自由探索路径：ConstraintAwareReasoner 约束推理
   - PathSelectionStrategy 根据置信度/复杂度/探索预算动态选择
@@ -132,16 +138,16 @@ all        = ["openai>=1.0", "anthropic>=0.20", "requests>=2.28", "playwright>=1
 
 1. **PrimitiveAdapter 真实执行需要靶场 metadata 配置** — 无 config key 且 `step.parameters` 未提供时只能走 metadata 回退
 2. **browser-inspect 无 JS 执行** — 使用 stdlib HTMLParser，非真实浏览器；可选 Playwright 适配
-3. **语义检索仅 TF-IDF** — InMemoryVectorStore，无真正 embedding
-4. **模式图硬编码** — PatternLibrary 6 族关键词匹配，动态发现的模式未回注
-5. ~~**LLM 无执行反馈闭环**~~ ✅ 已完成 — ObservationSummarizer + `_extract_current_state()` 现输出实际观测内容，LLM 可迭代调整策略
-6. ~~**原语未参数化**~~ ✅ 已完成 — `_resolve_*_specs()` 接受 `step.parameters` 覆盖，`PRIMITIVE_DESCRIPTIONS` 扩展，`_PRIMITIVE_PARAM_KEYS` 白名单已添加
+3. ~~**语义检索仅 TF-IDF**~~ ✅ 已完成 — InMemoryVectorStore 支持 cosine similarity + embedding，TF-IDF 实现已修正，CJK tokenize 已支持
+4. ~~**模式图硬编码**~~ ✅ 已完成 — PatternInjector 回注动态模式到 PatternLibrary，APGPlanner._plan_candidates 使用动态族
+5. ~~**LLM 无执行反馈闭环**~~ ✅ 已完成 — ObservationSummarizer + `_extract_current_state()` 现输出实际观测内容
+6. ~~**原语未参数化**~~ ✅ 已完成 — `_resolve_*_specs()` 接受 `step.parameters` 覆盖
 
 ## Development Conventions
 
 - 架构文档 (`docs/ARCHITECTURE.md`) 是唯一真实源，接口变更须先更新文档
 - 类型注解 + dataclass(slots=True) + PEP 8
-- 测试覆盖率 > 80%，182 个测试全通过
+- 测试覆盖率 > 80%，226 个测试全通过
 - 元数据回退路径必须保留（backward compat）
 - 安全壳验证在 runtime 执行前，critical 级违规阻止执行
 
@@ -158,16 +164,19 @@ tests/
 ├── test_enhanced_apg.py       — 增强规划器
 ├── test_constraint_aware_reasoner.py
 ├── test_dynamic_pattern_composer.py
-├── test_semantic_retrieval.py
+├── test_semantic_retrieval.py — 语义检索 + TF-IDF + Jaccard + CJK tokenize
 ├── test_path_selection.py
 ├── test_model_adapter.py
 ├── test_real_primitives.py    — 真实原语执行（38 个新测试）
 ├── test_cli.py                — CLI 入口 + HTTP 集成测试
+├── test_heuristic_free_exploration.py — 启发式自由探索 (P2)
+├── test_pattern_injector.py   — 模式回注 (P2)
+├── test_embedding_adapter.py  — Embedding 适配器 + CJK tokenize + cosine similarity (P2)
 ```
 
 ## Next Steps (Priority)
 
 - **P0:** ~~SecurityConstraints 与 AttackAgentConfig.security 对齐~~ ✅ 已完成
 - **P1:** ~~CLI 入口 (`python -m attack_agent --config ...`), 真实靶场集成测试~~ ✅ 已完成
-- **P2:** 启发式自由探索模板(无 LLM 时), 模式回注机制, 接入 embedding 模型
+- **P2:** ~~启发式自由探索模板(无 LLM 时), 模式回注机制, 接入 embedding 模型~~ ✅ 已完成
 - **P3:** ~~LLM 反馈闭环 + 原语参数化~~ ✅ 已完成
