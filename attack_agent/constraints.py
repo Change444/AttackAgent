@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections import Counter
+from urllib.parse import urlparse
 
 from .platform_models import ActionProgram, TaskBundle, WorkerProfile
 
@@ -96,6 +97,9 @@ class LightweightSecurityShell:
         # 6. 禁止组合验证（快速查找）
         violations.extend(self._check_forbidden_combinations(bundle))
 
+        # 7. 参数范围验证 — step.parameters 中 URL 目标 scope
+        violations.extend(self._check_parameter_scope(bundle))
+
         # 判定：critical级别违规才阻止执行
         critical_violations = [v for v in violations if v.severity == "critical"]
         return ValidationResult(
@@ -107,8 +111,6 @@ class LightweightSecurityShell:
         """检查目标是否在允许的范围内"""
         violations = []
 
-        # 解析目标host
-        from urllib.parse import urlparse
         parsed = urlparse(bundle.target)
 
         # file:// 协议通常是本地文件系统，允许通过
@@ -234,4 +236,35 @@ class LightweightSecurityShell:
                     message=f"禁止的原始动作组合: {' -> '.join(combo)}"
                 ))
 
+        return violations
+
+    # URL-containing parameter keys per primitive
+    _URL_PARAM_KEYS: dict[str, list[str]] = {
+        "http-request": ["url"],
+        "browser-inspect": ["url"],
+        "session-materialize": ["login_url"],
+        "artifact-scan": ["url", "location"],
+        "binary-inspect": ["url", "location"],
+    }
+
+    def _check_parameter_scope(self, bundle: TaskBundle) -> list[ConstraintViolation]:
+        """验证 step.parameters 中的 URL 是否在 allowed_hostpatterns 范围内"""
+        violations = []
+        for step in bundle.action_program.steps:
+            url_keys = self._URL_PARAM_KEYS.get(step.primitive, [])
+            for key in url_keys:
+                value = step.parameters.get(key)
+                if not value or not isinstance(value, str):
+                    continue
+                # Check path-only values (like /login) — these inherit from bundle.target, ok
+                if not value.startswith(("http://", "https://")):
+                    continue
+                parsed = urlparse(value)
+                hostname = parsed.hostname
+                if hostname and hostname not in self.constraints.allowed_hostpatterns:
+                    violations.append(ConstraintViolation(
+                        constraint_type="parameter_scope",
+                        severity="critical",
+                        message=f"step.parameters.{key} 指向外部host: {hostname}"
+                    ))
         return violations

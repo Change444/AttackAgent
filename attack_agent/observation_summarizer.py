@@ -38,12 +38,14 @@ class ObservationSummarizer:
         )
         parts: list[str] = []
         total_used = 0
+        sep_len = 1  # "\n" separator between parts
         for obs in selected:
             summary = self.summarize_single(obs, per_budget)
-            if total_used + len(summary) > self.config.max_total_chars:
+            added = len(summary) + (sep_len if parts else 0)
+            if total_used + added > self.config.max_total_chars:
                 break
             parts.append(summary)
-            total_used += len(summary)
+            total_used += added
         return "\n".join(parts)
 
     def summarize_single(self, obs: Observation, budget: int) -> str:

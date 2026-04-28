@@ -62,13 +62,13 @@ pip install attack-agent[openai]   # 或 pip install openai>=1.0
 | PathSelectionStrategy | `path_selection.py` | 根据置信度/复杂度选择路径 |
 | DynamicPatternComposer | `dynamic_pattern_composer.py` | 从成功案例发现攻击模式 |
 | SemanticRetrievalEngine | `semantic_retrieval.py` | TF-IDF 混合检索历史经验 |
-| LightweightSecurityShell | `constraints.py` | 轻量级安全壳，执行前验证 |
+| LightweightSecurityShell | `constraints.py` | 轻量级安全壳，执行前验证 + `_check_parameter_scope()` 验证 `step.parameters` URL |
 | WorkerRuntime | `runtime.py` | 执行 ActionProgram，9 个原语 |
 | HttpSessionManager | `runtime.py` | Cookie 持久化，redirect 跟随 |
 | CodeSandbox | `apg.py` | 受限 Python 执行环境 |
 | AttackAgentConfig | `config.py` | JSON + dataclass 配置管理 |
 | Model Adapters | `model_adapter.py` | OpenAI/Anthropic 适配器 |
-| ObservationSummarizer | `observation_summarizer.py` | 观测 payload → 有限长度文本摘要 🆕 |
+| ObservationSummarizer | `observation_summarizer.py` | 观测 payload → 有限长度文本摘要，集成到规划器 |
 
 ## Primitives (9)
 
@@ -88,6 +88,8 @@ pip install attack-agent[openai]   # 或 pip install openai>=1.0
 
 **session 传递：** `WorkerRuntime.run_task` 为每次执行创建 `HttpSessionManager`，所有步骤共享 cookie jar。`completed_observations` 在步骤间逐步积累，供后续原语引用。
 
+**参数优先级：** `step.parameters` > metadata defaults > hardcoded defaults。5 个原先忽略 `step.parameters` 的原语（browser-inspect, structured-parse, diff-compare, artifact-scan, extract-candidate）现已通过 `_step_param_overrides()` 接受参数覆盖。
+
 ## CodeSandbox Allowed
 
 - **Imports:** hashlib, base64, struct, binascii, itertools, collections, math, re, json
@@ -100,6 +102,8 @@ pip install attack-agent[openai]   # 或 pip install openai>=1.0
 `config/settings.json` → `AttackAgentConfig.from_file()` 加载。子配置：PlatformConfig, DualPathConfig, PatternDiscoveryConfig, SemanticRetrievalConfig, SecurityConfig, MemoryConfig, LoggingConfig, ModelConfig。
 
 **SecurityConstraints 与 SecurityConfig 对齐：** `SecurityConstraints.from_config(SecurityConfig)` 是单一真实源，Dispatcher 和 Platform 均从 `AttackAgentConfig.security` 读取约束值。默认值已统一（`max_http_requests=30`, `max_program_steps=15`, `max_estimated_cost=50.0`）。
+
+**ObservationSummarizer 配置：** `ModelConfig.observation_summary_budget_chars`（默认 2000）驱动 `ObservationSummarizerConfig.max_total_chars`，控制观测摘要总长度。
 
 ## Optional Dependencies
 
@@ -122,6 +126,7 @@ all        = ["openai>=1.0", "anthropic>=0.20", "requests>=2.28", "playwright>=1
   - 结构化路径：LLMReasoner 候选选择
   - 自由探索路径：ConstraintAwareReasoner 约束推理
   - PathSelectionStrategy 根据置信度/复杂度/探索预算动态选择
+  - ObservationSummarizer 为两条路径共享，将观测内容注入 LLM 提示词
 
 ## Known Limitations
 
@@ -129,8 +134,8 @@ all        = ["openai>=1.0", "anthropic>=0.20", "requests>=2.28", "playwright>=1
 2. **browser-inspect 无 JS 执行** — 使用 stdlib HTMLParser，非真实浏览器；可选 Playwright 适配
 3. **语义检索仅 TF-IDF** — InMemoryVectorStore，无真正 embedding
 4. **模式图硬编码** — PatternLibrary 6 族关键词匹配，动态发现的模式未回注
-5. **LLM 无执行反馈闭环** — 规划器只读观测标签/计数（如 "已有观察: 3 个"），不读实际 HTTP 响应内容、发现端点等，LLM 无法迭代调整策略 🆕
-6. **原语未参数化** — 6/9 原语完全忽略 `step.parameters`，LLM 提示词中 `parameters: {}` 为空占位符，无法指定具体 URL/方法/body 🆕
+5. ~~**LLM 无执行反馈闭环**~~ ✅ 已完成 — ObservationSummarizer + `_extract_current_state()` 现输出实际观测内容，LLM 可迭代调整策略
+6. ~~**原语未参数化**~~ ✅ 已完成 — `_resolve_*_specs()` 接受 `step.parameters` 覆盖，`PRIMITIVE_DESCRIPTIONS` 扩展，`_PRIMITIVE_PARAM_KEYS` 白名单已添加
 
 ## Development Conventions
 
@@ -165,9 +170,4 @@ tests/
 - **P0:** ~~SecurityConstraints 与 AttackAgentConfig.security 对齐~~ ✅ 已完成
 - **P1:** ~~CLI 入口 (`python -m attack_agent --config ...`), 真实靶场集成测试~~ ✅ 已完成
 - **P2:** 启发式自由探索模板(无 LLM 时), 模式回注机制, 接入 embedding 模型
-- **P3:** LLM 反馈闭环 + 原语参数化 — 让平台能开始解基础 web 类 CTF 题目 🆕
-  - ObservationSummarizer 新模块
-  - _resolve_*_specs() 接受 step.parameters
-  - _extract_current_state() 输出实际观测内容
-  - ReasoningContext 加 observation_summaries
-  - 安全壳参数 scope 验证
+- **P3:** ~~LLM 反馈闭环 + 原语参数化~~ ✅ 已完成

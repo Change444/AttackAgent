@@ -23,6 +23,7 @@ class ReasoningContext:
     description: str
     signals: list[str]
     observation_kinds: list[str] = field(default_factory=list)
+    observation_summaries: list[str] = field(default_factory=list)
     hypothesis_statements: list[str] = field(default_factory=list)
     artifact_kinds: list[str] = field(default_factory=list)
     memory_summaries: list[str] = field(default_factory=list)
@@ -108,6 +109,7 @@ class LLMReasoner(HeuristicReasoner):
             "description": context.description,
             "signals": context.signals,
             "observation_kinds": context.observation_kinds,
+            "observation_summaries": context.observation_summaries,
             "hypothesis_statements": context.hypothesis_statements,
             "artifact_kinds": context.artifact_kinds,
             "memory_summaries": context.memory_summaries,
@@ -120,6 +122,7 @@ class LLMReasoner(HeuristicReasoner):
                     "node_kind": candidate.node_kind,
                     "step_primitives": [step.primitive for step in candidate.steps],
                     "instructions": [step.instruction for step in candidate.steps],
+                    "step_parameters": [step.parameters for step in candidate.steps],
                     "score": candidate.score,
                 }
                 for index, candidate in enumerate(ordered_candidates)

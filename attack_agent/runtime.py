@@ -345,13 +345,26 @@ def _execute_artifact_scan(step: PrimitiveActionStep, bundle: TaskBundle, sessio
     )
 
 
+def _step_param_overrides(step: PrimitiveActionStep) -> dict[str, object]:
+    """Extract step.parameters excluding required_tags — these override metadata defaults."""
+    return {k: v for k, v in step.parameters.items() if k != "required_tags" and v is not None}
+
+
 def _resolve_http_request_specs(step: PrimitiveActionStep, bundle: TaskBundle) -> list[dict[str, object]]:
     parsed_target = parse.urlparse(bundle.target)
     if parsed_target.scheme not in {"http", "https"}:
         return []
+    param_overrides = _step_param_overrides(step)
     metadata = bundle.instance.metadata
     raw_config = metadata.get("http_request")
+    # When metadata absent but step.parameters has enough info, construct spec from parameters
     if raw_config is None:
+        # Only construct from step.parameters when url or path is present — method alone is insufficient
+        if param_overrides.get("url") or param_overrides.get("path"):
+            spec = dict(param_overrides)
+            if "method" not in spec:
+                spec["method"] = "GET"
+            return [spec]
         return []
     required_tags = list(step.parameters.get("required_tags", []))
     if isinstance(raw_config, list):
@@ -383,6 +396,7 @@ def _resolve_http_request_specs(step: PrimitiveActionStep, bundle: TaskBundle) -
             continue
         merged = dict(defaults)
         merged.update(candidate)
+        merged.update(param_overrides)  # step.parameters > metadata defaults
         resolved.append(merged)
     return resolved
 
@@ -391,9 +405,15 @@ def _resolve_browser_inspect_specs(step: PrimitiveActionStep, bundle: TaskBundle
     parsed_target = parse.urlparse(bundle.target)
     if parsed_target.scheme not in {"http", "https"}:
         return []
+    param_overrides = _step_param_overrides(step)
     metadata = bundle.instance.metadata
     raw_config = metadata.get("browser_inspect")
     if raw_config is None:
+        if param_overrides.get("url") or param_overrides.get("path"):
+            spec = dict(param_overrides)
+            if "url" not in spec and "path" not in spec:
+                spec["path"] = "/"
+            return [spec]
         return []
     required_tags = list(step.parameters.get("required_tags", []))
     if isinstance(raw_config, list):
@@ -421,6 +441,7 @@ def _resolve_browser_inspect_specs(step: PrimitiveActionStep, bundle: TaskBundle
             continue
         merged = dict(defaults)
         merged.update(candidate)
+        merged.update(param_overrides)  # step.parameters > metadata defaults
         resolved.append(merged)
     return resolved
 
@@ -429,9 +450,15 @@ def _resolve_artifact_scan_specs(step: PrimitiveActionStep, bundle: TaskBundle) 
     parsed_target = parse.urlparse(bundle.target)
     if parsed_target.scheme not in {"file", "http", "https"} and _resolve_local_file_target(bundle.target) is None:
         return []
+    param_overrides = _step_param_overrides(step)
     metadata = bundle.instance.metadata
     raw_config = metadata.get("artifact_scan")
     if raw_config is None:
+        if param_overrides.get("url") or param_overrides.get("path") or param_overrides.get("location"):
+            spec = dict(param_overrides)
+            if "location" in spec and "url" not in spec and "path" not in spec:
+                spec["url"] = spec["location"]
+            return [spec]
         return []
     required_tags = list(step.parameters.get("required_tags", []))
     if isinstance(raw_config, list):
@@ -458,6 +485,7 @@ def _resolve_artifact_scan_specs(step: PrimitiveActionStep, bundle: TaskBundle) 
             continue
         merged = dict(defaults)
         merged.update(candidate)
+        merged.update(param_overrides)  # step.parameters > metadata defaults
         resolved.append(merged)
     return resolved
 
@@ -466,9 +494,15 @@ def _resolve_binary_inspect_specs(step: PrimitiveActionStep, bundle: TaskBundle)
     target_path = _resolve_local_file_target(bundle.target)
     if target_path is None:
         return []
+    param_overrides = _step_param_overrides(step)
     metadata = bundle.instance.metadata
     raw_config = metadata.get("binary_inspect")
     if raw_config is None:
+        if param_overrides.get("path") or param_overrides.get("url") or param_overrides.get("location"):
+            spec = dict(param_overrides)
+            if "location" in spec and "path" not in spec and "url" not in spec:
+                spec["path"] = spec["location"]
+            return [spec]
         return []
     required_tags = list(step.parameters.get("required_tags", []))
     if isinstance(raw_config, list):
@@ -496,6 +530,7 @@ def _resolve_binary_inspect_specs(step: PrimitiveActionStep, bundle: TaskBundle)
             continue
         merged = dict(defaults)
         merged.update(candidate)
+        merged.update(param_overrides)  # step.parameters > metadata defaults
         resolved.append(merged)
     return resolved
 
@@ -919,16 +954,30 @@ def _execute_session_materialize(step: PrimitiveActionStep, bundle: TaskBundle, 
 
 
 def _resolve_session_materialize_specs(step: PrimitiveActionStep, bundle: TaskBundle) -> list[dict[str, object]]:
+    param_overrides = _step_param_overrides(step)
     metadata = bundle.instance.metadata
     raw_config = metadata.get("session_materialize")
     if raw_config is None:
+        if param_overrides.get("login_url") or param_overrides.get("username"):
+            spec = dict(param_overrides)
+            if "method" not in spec:
+                spec["method"] = "POST"
+            return [spec]
         return []
     if isinstance(raw_config, dict):
         if raw_config.get("enabled", True) is False:
             return []
-        return [raw_config]
+        merged = dict(raw_config)
+        merged.update(param_overrides)  # step.parameters > metadata defaults
+        return [merged]
     if isinstance(raw_config, list):
-        return [item for item in raw_config if isinstance(item, dict)]
+        results = []
+        for item in raw_config:
+            if isinstance(item, dict):
+                merged = dict(item)
+                merged.update(param_overrides)
+                results.append(merged)
+        return results
     return []
 
 
@@ -1388,15 +1437,35 @@ def _extract_candidates(step: PrimitiveActionStep, bundle: TaskBundle) -> Action
 class PrimitiveRegistry:
     def __init__(self) -> None:
         specs = [
-            PrimitiveActionSpec("http-request", "network/http", {"request": "dict"}, {"observations": "list"}, 1.0, "low"),
-            PrimitiveActionSpec("browser-inspect", "browser/dom", {"request": "dict"}, {"observations": "list"}, 1.4, "medium"),
-            PrimitiveActionSpec("session-materialize", "session/state", {"request": "dict"}, {"observations": "list"}, 1.1, "medium"),
-            PrimitiveActionSpec("artifact-scan", "artifact/fs", {"request": "dict"}, {"artifacts": "list"}, 1.2, "low"),
-            PrimitiveActionSpec("structured-parse", "text/parse", {"blob": "dict"}, {"observations": "list", "hypotheses": "list"}, 0.8, "low"),
-            PrimitiveActionSpec("diff-compare", "compare/diff", {"baseline": "dict", "variant": "dict"}, {"observations": "list"}, 0.7, "low"),
-            PrimitiveActionSpec("code-sandbox", "sandbox/transform", {"program_fragment": "str", "inputs": "dict"}, {"derived": "dict"}, 1.5, "medium"),
-            PrimitiveActionSpec("binary-inspect", "binary/strings", {"blob": "dict"}, {"artifacts": "list", "observations": "list"}, 1.2, "low"),
-            PrimitiveActionSpec("extract-candidate", "extract/flag", {"texts": "list"}, {"candidate_flags": "list"}, 0.4, "low"),
+            PrimitiveActionSpec("http-request", "network/http",
+                {"method": "str(GET/POST等)", "path": "str", "url": "str", "headers": "dict",
+                 "json": "dict", "form": "dict", "query": "dict", "timeout": "float"},
+                {"observations": "list"}, 1.0, "low"),
+            PrimitiveActionSpec("browser-inspect", "browser/dom",
+                {"path": "str", "url": "str", "headers": "dict", "timeout": "float"},
+                {"observations": "list"}, 1.4, "medium"),
+            PrimitiveActionSpec("session-materialize", "session/state",
+                {"login_url": "str", "method": "str", "form_fields": "dict",
+                 "username": "str", "password": "str", "headers": "dict"},
+                {"observations": "list"}, 1.1, "medium"),
+            PrimitiveActionSpec("artifact-scan", "artifact/fs",
+                {"path": "str", "url": "str", "location": "str", "preview_bytes": "int"},
+                {"artifacts": "list"}, 1.2, "low"),
+            PrimitiveActionSpec("structured-parse", "text/parse",
+                {"parse_source": "str(observation_id)", "format": "str(json/html/headers)", "extract_fields": "list"},
+                {"observations": "list", "hypotheses": "list"}, 0.8, "low"),
+            PrimitiveActionSpec("diff-compare", "compare/diff",
+                {"baseline_observation_id": "str", "variant_observation_id": "str"},
+                {"observations": "list"}, 0.7, "low"),
+            PrimitiveActionSpec("code-sandbox", "sandbox/transform",
+                {"program_fragment": "str", "inputs": "dict"},
+                {"derived": "dict"}, 1.5, "medium"),
+            PrimitiveActionSpec("binary-inspect", "binary/strings",
+                {"path": "str", "url": "str", "location": "str", "min_length": "int", "max_strings": "int"},
+                {"artifacts": "list", "observations": "list"}, 1.2, "low"),
+            PrimitiveActionSpec("extract-candidate", "extract/flag",
+                {"patterns": "list(regex)", "required_tags": "list"},
+                {"candidate_flags": "list"}, 0.4, "low"),
         ]
         self.adapters = {spec.name: PrimitiveAdapter(spec) for spec in specs}
 

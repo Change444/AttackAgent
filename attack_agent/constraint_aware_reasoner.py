@@ -12,6 +12,7 @@ from .platform_models import (
 )
 from .constraints import LightweightSecurityShell, SecurityConstraints
 from .reasoning import ReasoningModel
+from .observation_summarizer import ObservationSummarizer
 
 
 CONSTRAINT_AWARE_PROMPT = """
@@ -52,9 +53,21 @@ CONSTRAINT_AWARE_PROMPT = """
         {{
             "primitive": "工具名称",
             "instruction": "具体说明",
-            "parameters": {{}}
+            "parameters": {{
+                "根据工具说明填入具体参数，没有需要的参数时留空{{}}"
+            }}
         }}
     ]
+}}
+
+示例步骤：
+{{
+    "primitive": "http-request",
+    "instruction": "访问登录页面获取表单信息",
+    "parameters": {{
+        "method": "GET",
+        "path": "/login"
+    }}
 }}
 """
 
@@ -97,15 +110,15 @@ class ConstraintContext:
 
 
 PRIMITIVE_DESCRIPTIONS: dict[str, str] = {
-    "http-request": "发送HTTP请求，获取响应",
-    "browser-inspect": "使用浏览器检查网页内容",
-    "artifact-scan": "扫描文件内容",
-    "binary-inspect": "检查二进制文件",
-    "code-sandbox": "在沙盒中执行代码",
-    "structured-parse": "解析结构化数据",
-    "diff-compare": "对比两个内容差异",
-    "extract-candidate": "提取候选flag",
-    "session-materialize": "会话物化操作",
+    "http-request": "发送HTTP请求，获取响应。参数: method(GET/POST等), path, url, headers, json, form, query, timeout",
+    "browser-inspect": "使用浏览器检查网页内容。参数: path, url, headers, timeout",
+    "session-materialize": "会话物化(登录)。参数: login_url, method, form_fields, username, password, headers",
+    "artifact-scan": "扫描文件内容。参数: path, url, location, preview_bytes",
+    "binary-inspect": "检查二进制文件。参数: path, url, location, min_length, max_strings",
+    "code-sandbox": "在沙盒中执行代码。参数: program_fragment, inputs",
+    "structured-parse": "解析结构化数据。参数: parse_source(observation_id), format(json/html/headers), extract_fields",
+    "diff-compare": "对比两个内容差异。参数: baseline_observation_id, variant_observation_id",
+    "extract-candidate": "提取候选flag。参数: patterns(regex列表), required_tags",
 }
 
 ATTACK_PHASES = ["侦察", "分析", "利用", "验证"]
@@ -116,6 +129,19 @@ SAFETY_RULES_TEMPLATE = [
     "不尝试越权访问",
     "所有操作需可追溯",
 ]
+
+
+_PRIMITIVE_PARAM_KEYS: dict[str, set[str]] = {
+    "http-request": {"method", "path", "url", "headers", "json", "form", "query", "timeout"},
+    "browser-inspect": {"path", "url", "headers", "timeout"},
+    "session-materialize": {"login_url", "method", "form_fields", "username", "password", "headers"},
+    "artifact-scan": {"path", "url", "location", "preview_bytes"},
+    "binary-inspect": {"path", "url", "location", "min_length", "max_strings"},
+    "code-sandbox": {"program_fragment", "inputs"},
+    "structured-parse": {"parse_source", "format", "extract_fields", "id"},
+    "diff-compare": {"baseline_observation_id", "variant_observation_id", "id"},
+    "extract-candidate": {"patterns", "required_tags"},
+}
 
 
 class ConstraintContextBuilder:
@@ -155,10 +181,12 @@ class ConstraintAwareReasoner:
     def __init__(self,
                  model: ReasoningModel,
                  context_builder: ConstraintContextBuilder,
-                 validator: LightweightSecurityShell) -> None:
+                 validator: LightweightSecurityShell,
+                 summarizer: ObservationSummarizer | None = None) -> None:
         self.model = model
         self.context_builder = context_builder
         self.validator = validator
+        self._summarizer = summarizer or ObservationSummarizer()
 
     def generate_constrained_plan(self, context: PlanningContext) -> ActionProgram | None:
         """生成约束感知的自由计划"""
@@ -189,7 +217,7 @@ class ConstraintAwareReasoner:
         return constraints.to_model_prompt(current_state)
 
     def _extract_current_state(self, context: PlanningContext) -> str:
-        """提取当前状态描述"""
+        """提取当前状态描述 — 含实际观测内容而非计数"""
         record = context.record
         parts = [
             f"挑战: {record.snapshot.challenge.name}",
@@ -197,7 +225,22 @@ class ConstraintAwareReasoner:
             f"目标: {record.snapshot.challenge.target}",
         ]
         if record.observations:
-            parts.append(f"已有观察: {len(record.observations)} 个")
+            summary = self._summarizer.summarize_observations(record.observations)
+            if summary:
+                parts.append(f"已有观察详情:\n{summary}")
+            else:
+                parts.append(f"已有观察: {len(record.observations)} 个")
+        # Surface world_state highlights
+        ws = record.world_state
+        if ws.endpoints:
+            ep_strs = [f"{e.method} {e.path}" for e in ws.endpoints.values()]
+            parts.append(f"已知端点: {'; '.join(ep_strs)}")
+        if ws.credentials:
+            cred_strs = [f"{c.username}@{c.service}" for c in ws.credentials.values()]
+            parts.append(f"已知凭据: {'; '.join(cred_strs)}")
+        if ws.findings:
+            find_strs = [f.text for f in ws.findings.values()]
+            parts.append(f"已知发现: {'; '.join(find_strs)}")
         if record.artifacts:
             parts.append(f"已有证据: {len(record.artifacts)} 个")
         if record.candidate_flags:
@@ -205,7 +248,7 @@ class ConstraintAwareReasoner:
         return "\n".join(parts)
 
     def _parse_plan_response(self, response: dict[str, Any], context: PlanningContext) -> ActionProgram | None:
-        """解析模型返回的计划"""
+        """解析模型返回的计划 — strip unknown parameter keys"""
         if not isinstance(response, dict):
             return None
 
@@ -223,10 +266,16 @@ class ConstraintAwareReasoner:
             parameters = step_data.get("parameters", {})
             if not primitive or not instruction:
                 continue
+            if not isinstance(parameters, dict):
+                parameters = {}
+            # Strip unknown parameter keys per primitive whitelist
+            allowed_keys = _PRIMITIVE_PARAM_KEYS.get(primitive)
+            if allowed_keys is not None:
+                parameters = {k: v for k, v in parameters.items() if k in allowed_keys}
             steps.append(PrimitiveActionStep(
                 primitive=primitive,
                 instruction=instruction,
-                parameters=parameters if isinstance(parameters, dict) else {},
+                parameters=parameters,
             ))
 
         if not steps:

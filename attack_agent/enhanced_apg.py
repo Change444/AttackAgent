@@ -6,6 +6,7 @@ from .apg import APGPlanner
 from .constraint_aware_reasoner import ConstraintAwareReasoner, ConstraintContext
 from .dynamic_pattern_composer import DynamicPatternComposer, PatternTemplate
 from .models import new_id
+from .observation_summarizer import ObservationSummarizer
 from .path_selection import PathSelectionStrategy, PathSelectionFactors
 from .platform_models import (
     ActionProgram,

@@ -22,6 +22,7 @@ from .platform_models import (
     WorkerProfile,
 )
 from .reasoning import HeuristicReasoner, PlanCandidate, ReasoningContext
+from .observation_summarizer import ObservationSummarizer
 
 
 FAMILY_KEYWORDS = {
@@ -47,16 +48,16 @@ FAMILY_PROFILES = {
 FAMILY_PROGRAMS = {
     "identity-boundary": {
         PatternNodeKind.OBSERVATION_GATE: [
-            PrimitiveActionStep("http-request", "Inspect public routes and auth boundaries", {"required_tags": ["identity-boundary", "observation_gate"]}),
+            PrimitiveActionStep("http-request", "Inspect public routes and auth boundaries", {"required_tags": ["identity-boundary", "observation_gate"], "method": "GET"}),
             PrimitiveActionStep("structured-parse", "Normalize tokens, cookies, and role signals", {"required_tags": ["identity-boundary", "observation_gate"]}),
         ],
         PatternNodeKind.ACTION_TEMPLATE: [
-            PrimitiveActionStep("session-materialize", "Materialize reusable sessions or claims", {"required_tags": ["identity-boundary", "action_template"]}),
+            PrimitiveActionStep("session-materialize", "Materialize reusable sessions or claims", {"required_tags": ["identity-boundary", "action_template"], "method": "POST"}),
             PrimitiveActionStep("diff-compare", "Compare privilege-sensitive responses", {"required_tags": ["identity-boundary", "action_template"]}),
             PrimitiveActionStep("code-sandbox", "Use sandboxed parsing or transformation when auth artifacts need analysis", {"required_tags": ["identity-boundary", "action_template"]}),
         ],
         PatternNodeKind.VERIFICATION_GATE: [
-            PrimitiveActionStep("http-request", "Re-check privileged paths with current state", {"required_tags": ["identity-boundary", "verification_gate"]}),
+            PrimitiveActionStep("http-request", "Re-check privileged paths with current state", {"required_tags": ["identity-boundary", "verification_gate"], "method": "GET"}),
             PrimitiveActionStep("extract-candidate", "Extract candidate flag from observations or artifacts", {"required_tags": ["identity-boundary", "verification_gate"]}),
         ],
         PatternNodeKind.FALLBACK: [
@@ -65,7 +66,7 @@ FAMILY_PROGRAMS = {
     },
     "input-interpreter-boundary": {
         PatternNodeKind.OBSERVATION_GATE: [
-            PrimitiveActionStep("http-request", "Collect baseline responses for interpreter boundaries", {"required_tags": ["input-interpreter-boundary", "observation_gate"]}),
+            PrimitiveActionStep("http-request", "Collect baseline responses for interpreter boundaries", {"required_tags": ["input-interpreter-boundary", "observation_gate"], "method": "GET"}),
             PrimitiveActionStep("diff-compare", "Measure response differences across crafted variants", {"required_tags": ["input-interpreter-boundary", "observation_gate"]}),
         ],
         PatternNodeKind.ACTION_TEMPLATE: [
@@ -81,7 +82,7 @@ FAMILY_PROGRAMS = {
     },
     "reflection-render-boundary": {
         PatternNodeKind.OBSERVATION_GATE: [
-            PrimitiveActionStep("http-request", "Collect reflection points and render contexts", {"required_tags": ["reflection-render-boundary", "observation_gate"]}),
+            PrimitiveActionStep("http-request", "Collect reflection points and render contexts", {"required_tags": ["reflection-render-boundary", "observation_gate"], "method": "GET"}),
             PrimitiveActionStep("browser-inspect", "Observe browser-side rendering and hidden content", {"required_tags": ["reflection-render-boundary", "observation_gate"]}),
         ],
         PatternNodeKind.ACTION_TEMPLATE: [
@@ -279,10 +280,11 @@ class CodeSandbox:
 
 
 class APGPlanner:
-    def __init__(self, memory: EpisodeMemory, pattern_library: PatternLibrary | None = None, reasoner: HeuristicReasoner | None = None) -> None:
+    def __init__(self, memory: EpisodeMemory, pattern_library: PatternLibrary | None = None, reasoner: HeuristicReasoner | None = None, summarizer: ObservationSummarizer | None = None) -> None:
         self.memory = memory
         self.pattern_library = pattern_library or PatternLibrary()
         self.reasoner = reasoner or HeuristicReasoner()
+        self._summarizer = summarizer or ObservationSummarizer()
 
     def create_graph(self, project: ProjectSnapshot) -> PatternGraph:
         return self.pattern_library.build(project)
@@ -290,6 +292,8 @@ class APGPlanner:
     def plan(self, record) -> tuple[ActionProgram | None, list[RetrievalHit]]:
         if record.pattern_graph is None:
             return None, []
+        # Include summarized observation content in query for better retrieval
+        obs_summary = self._summarizer.summarize_observations(record.observations) if record.observations else ""
         query = " ".join(
             [
                 record.snapshot.challenge.name,
@@ -297,11 +301,14 @@ class APGPlanner:
                 " ".join(record.snapshot.challenge.metadata.get("signals", [])),
                 " ".join(hypothesis.statement for hypothesis in record.hypotheses.values()),
                 " ".join(observation.kind for observation in record.observations.values()),
+                obs_summary,
             ]
         )
         memory_hits = self.memory.search(query)
         family_scores = self._family_scores(record, memory_hits)
         candidates = self._plan_candidates(record, family_scores)
+        # Build observation_summaries for ReasoningContext
+        obs_summaries_list = [obs_summary] if obs_summary else []
         context = ReasoningContext(
             challenge_id=record.snapshot.challenge.id,
             challenge_name=record.snapshot.challenge.name,
@@ -309,6 +316,7 @@ class APGPlanner:
             description=record.snapshot.challenge.description,
             signals=list(record.snapshot.challenge.metadata.get("signals", [])),
             observation_kinds=[observation.kind for observation in record.observations.values()],
+            observation_summaries=obs_summaries_list,
             hypothesis_statements=[hypothesis.statement for hypothesis in record.hypotheses.values()],
             artifact_kinds=[artifact.kind for artifact in record.artifacts.values()],
             memory_summaries=[hit.summary for hit in memory_hits],
@@ -401,7 +409,10 @@ class APGPlanner:
         return None
 
 
-def build_episode_entry(record, program: ActionProgram, outcome: ActionOutcome) -> EpisodeEntry:
+def build_episode_entry(record, program: ActionProgram, outcome: ActionOutcome, summarizer: ObservationSummarizer | None = None) -> EpisodeEntry:
+    _summarizer = summarizer or ObservationSummarizer()
+    # Enrich feature_text with observation content for better retrieval
+    obs_summary = _summarizer.summarize_observations(record.observations) if record.observations else ""
     feature_text = " ".join(
         [
             record.snapshot.challenge.name,
@@ -410,14 +421,28 @@ def build_episode_entry(record, program: ActionProgram, outcome: ActionOutcome) 
             " ".join(record.snapshot.challenge.metadata.get("signals", [])),
             " ".join(hypothesis.statement for hypothesis in outcome.derived_hypotheses),
             " ".join(observation.kind for observation in outcome.observations),
+            obs_summary,
         ]
     )
     stop_reason = outcome.failure_reason or ("candidate_found" if outcome.candidate_flags else "progress")
+    # Enrich summary with key findings
+    key_findings = ""
+    if outcome.observations:
+        obs_ids = list(outcome.observations)[:3]
+        findings_parts = []
+        for obs in outcome.observations[:3]:
+            if obs.payload.get("endpoints"):
+                findings_parts.append(f"endpoints:{len(obs.payload['endpoints'])}")
+            elif obs.payload.get("forms"):
+                findings_parts.append(f"forms:{len(obs.payload['forms'])}")
+            elif obs.payload.get("status_code"):
+                findings_parts.append(f"status:{obs.payload['status_code']}")
+        key_findings = " | " + " ".join(findings_parts) if findings_parts else ""
     return EpisodeEntry(
         id=new_id("episode"),
         feature_text=feature_text,
         pattern_families=list({record.pattern_graph.nodes[node_id].family for node_id in program.pattern_nodes}),
-        summary=f"{program.goal} -> {outcome.status}",
+        summary=f"{program.goal} -> {outcome.status}{key_findings}",
         success=bool(outcome.candidate_flags or outcome.novelty > 0.0),
         stop_reason=stop_reason,
         candidate_keys=[candidate.dedupe_key for candidate in outcome.candidate_flags],

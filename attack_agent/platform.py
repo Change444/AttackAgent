@@ -8,6 +8,7 @@ from .controller import Controller
 from .dispatcher import Dispatcher
 from .dynamic_pattern_composer import DynamicPatternComposer
 from .enhanced_apg import EnhancedAPGPlanner
+from .observation_summarizer import ObservationSummarizer, ObservationSummarizerConfig
 from .platform_models import DualPathConfig, PatternNodeKind, ProjectStage
 from .provider import CompetitionProvider
 from .reasoning import HeuristicReasoner, LLMReasoner, ReasoningModel
@@ -32,18 +33,25 @@ class CompetitionPlatform:
         if agent_config is not None:
             security_constraints = SecurityConstraints.from_config(agent_config.security)
             dual_config = config or agent_config.dual_path
+            # Build ObservationSummarizer from config budget
+            budget_chars = agent_config.model.observation_summary_budget_chars
+            summarizer = ObservationSummarizer(ObservationSummarizerConfig(max_total_chars=budget_chars))
         else:
             security_constraints = SecurityConstraints()
             dual_config = config or DualPathConfig()
+            summarizer = ObservationSummarizer()
+
+        # Share summarizer to StateGraphService
+        self.state_graph.observation_summarizer = summarizer
 
         if model is not None:
             llm_reasoner = LLMReasoner(model)
             shell = LightweightSecurityShell(security_constraints)
             builder = ConstraintContextBuilder(security_constraints)
-            constraint_reasoner = ConstraintAwareReasoner(model, builder, shell)
+            constraint_reasoner = ConstraintAwareReasoner(model, builder, shell, summarizer=summarizer)
             semantic = SemanticRetrievalEngine()
             composer = DynamicPatternComposer()
-            structured = APGPlanner(self.state_graph.episode_memory, reasoner=llm_reasoner)
+            structured = APGPlanner(self.state_graph.episode_memory, reasoner=llm_reasoner, summarizer=summarizer)
             enhanced = EnhancedAPGPlanner(
                 structured_planner=structured,
                 free_exploration_planner=constraint_reasoner,
@@ -54,7 +62,7 @@ class CompetitionPlatform:
             self.strategy = StrategyLayer(enhanced)
         else:
             heuristic = reasoner or HeuristicReasoner()
-            self.strategy = StrategyLayer(APGPlanner(self.state_graph.episode_memory, reasoner=heuristic))
+            self.strategy = StrategyLayer(APGPlanner(self.state_graph.episode_memory, reasoner=heuristic, summarizer=summarizer))
 
         self.dispatcher = Dispatcher(
             self.state_graph, self.runtime, self.strategy,

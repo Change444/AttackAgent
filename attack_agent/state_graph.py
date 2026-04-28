@@ -8,6 +8,7 @@ from .compilers import HandoffMemory, ProgressCompiler, RetryHandoffCompiler
 from .models import Asset, Credential, Endpoint, Evidence, Finding, Service, Session, new_id
 from .platform_models import Artifact, CandidateFlag, ChallengeInstance, Event, EventType, Hypothesis, Observation, PatternGraph, ProjectSnapshot
 from .world_state import WorldState
+from .observation_summarizer import ObservationSummarizer
 
 
 @dataclass(slots=True)
@@ -33,6 +34,7 @@ class StateGraphService:
         self.progress_compiler = ProgressCompiler()
         self.retry_compiler = RetryHandoffCompiler()
         self.episode_memory = EpisodeMemory()
+        self.observation_summarizer = ObservationSummarizer()
 
     def upsert_project(self, project_snapshot: ProjectSnapshot) -> None:
         existing = self.projects.get(project_snapshot.project_id)
@@ -90,7 +92,7 @@ class StateGraphService:
             )
         )
         record = self.projects[project_id]
-        entry = build_episode_entry(record, program, outcome)
+        entry = build_episode_entry(record, program, outcome, self.observation_summarizer)
         self.episode_memory.add(entry)
         self.append_event(
             Event(
