@@ -50,10 +50,13 @@ class RetryComposer:
 
 
 class SubmitClassifier:
+    def __init__(self, confidence_threshold: float = 0.6) -> None:
+        self.confidence_threshold = confidence_threshold
+
     def classify(self, project: ProjectSnapshot, candidate: CandidateFlag, existing_keys: set[str]) -> SubmitDecision:
         if candidate.dedupe_key in existing_keys and candidate.submitted:
             return SubmitDecision(False, "duplicate candidate")
-        if candidate.confidence < 0.85:
+        if candidate.confidence < self.confidence_threshold:
             return SubmitDecision(False, "confidence too low")
         if not candidate.format_match:
             return SubmitDecision(False, "flag format mismatch")
@@ -63,12 +66,13 @@ class SubmitClassifier:
 
 
 class StrategyLayer:
-    def __init__(self, planner) -> None:
+    def __init__(self, planner, stagnation_threshold: int = 8, confidence_threshold: float = 0.6) -> None:
         self.planner = planner
+        self.stagnation_threshold = stagnation_threshold
         self.task_compiler = TaskPromptCompiler()
         self.compressor = StateCompressor()
         self.retry_composer = RetryComposer()
-        self.submit_classifier = SubmitClassifier()
+        self.submit_classifier = SubmitClassifier(confidence_threshold)
 
     def select_profile(self, project: ProjectSnapshot) -> WorkerProfile:
         profile, _reason = self.planner.reasoner.choose_profile(project)
@@ -98,7 +102,7 @@ class StrategyLayer:
 
     def should_abandon(self, record) -> bool:
         recent_failures = record.world_state.recent_failures(limit=4)
-        if record.stagnation_counter < 3:
+        if record.stagnation_counter < self.stagnation_threshold:
             return False
         repeated_dead_ends = len(record.tombstones) >= 2
         low_novelty = all(failure.status == "failed" for failure in recent_failures) if recent_failures else True

@@ -21,7 +21,7 @@ from attack_agent.provider import InMemoryCompetitionProvider, LocalHTTPCompetit
 
 class TestCLIBuildProvider(unittest.TestCase):
     def test_build_provider_from_url(self):
-        provider = _build_provider("http://127.0.0.1:9999", None)
+        provider = _build_provider("http://127.0.0.1:9999", None, None, None, None, None)
         self.assertIsInstance(provider, LocalHTTPCompetitionProvider)
         self.assertEqual(provider.base_url, "http://127.0.0.1:9999")
 
@@ -33,13 +33,13 @@ class TestCLIBuildProvider(unittest.TestCase):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
             json.dump(challenges, f)
             f.flush()
-            provider = _build_provider(None, f.name)
+            provider = _build_provider(None, f.name, None, None, None, None)
         self.assertIsInstance(provider, InMemoryCompetitionProvider)
         self.assertEqual(len(provider.challenges), 1)
         Path(f.name).unlink(missing_ok=True)
 
     def test_build_provider_default_demo(self):
-        provider = _build_provider(None, None)
+        provider = _build_provider(None, None, None, None, None, None)
         self.assertIsInstance(provider, InMemoryCompetitionProvider)
         self.assertEqual(len(provider.challenges), 1)
         self.assertEqual("demo-1", list(provider.challenges.keys())[0])
@@ -63,27 +63,15 @@ class TestCLIBuildModel(unittest.TestCase):
 
 
 class TestCLIMainRun(unittest.TestCase):
-    def test_main_with_challenges_file_solves(self):
-        """CLI with a challenges JSON file that has metadata should solve."""
+    def test_main_with_challenges_file_runs(self):
+        """CLI with a challenges JSON file runs and produces output (no longer fakes solving via metadata)."""
         challenges = [
             {"id": "web-auth", "name": "JWT Role Boundary", "category": "web",
              "difficulty": "medium", "target": "http://127.0.0.1:8080",
              "description": "Local challenge with login and admin.",
              "metadata": {
                  "hint_budget": 1, "hint": "identity-boundary",
-                 "flag": "flag{cli-test}",
                  "signals": ["login", "cookie", "admin", "role"],
-                 "primitive_payloads": {
-                     "http-request": [{"id": "obs-auth", "type": "observation",
-                                       "kind": "http-surface", "tags": ["identity-boundary"],
-                                       "payload": {"services": [{"name": "http", "port": 8080}],
-                                                   "endpoints": [{"path": "/"}, {"path": "/admin"}]}}],
-                     "session-materialize": [{"id": "obs-session", "type": "observation",
-                                              "kind": "session-state", "tags": ["identity-boundary"],
-                                              "payload": {"sessions": [{"username": "admin"}]}}],
-                     "extract-candidate": [{"type": "candidate_flag", "tags": ["identity-boundary"],
-                                            "value": "flag{cli-test}", "confidence": 0.97}],
-                 },
              }},
         ]
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
@@ -93,11 +81,10 @@ class TestCLIMainRun(unittest.TestCase):
 
         captured = io.StringIO()
         with patch("sys.stdout", captured):
-            main(["--challenges-file", challenges_file, "--max-cycles", "12"])
+            main(["--challenges-file", challenges_file, "--max-cycles", "3"])
 
         output = captured.getvalue()
         self.assertIn("project:web-auth", output)
-        self.assertIn("done", output)
 
         Path(challenges_file).unlink(missing_ok=True)
 
@@ -114,16 +101,7 @@ class TestCLIMainRun(unittest.TestCase):
              "difficulty": "easy", "target": "http://127.0.0.1:8080",
              "description": "test",
              "metadata": {
-                 "hint_budget": 1, "flag": "flag{verbose}",
-                 "signals": ["login", "admin"],
-                 "primitive_payloads": {
-                     "http-request": [{"id": "obs-v", "type": "observation",
-                                       "kind": "http-surface", "tags": ["identity-boundary"],
-                                       "payload": {"services": [{"name": "http", "port": 8080}],
-                                                   "endpoints": [{"path": "/"}]}}],
-                     "extract-candidate": [{"type": "candidate_flag", "tags": ["identity-boundary"],
-                                            "value": "flag{verbose}", "confidence": 0.97}],
-                 },
+                 "hint_budget": 1, "signals": ["login", "admin"],
              }},
         ]
         with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as f:
@@ -133,7 +111,7 @@ class TestCLIMainRun(unittest.TestCase):
 
         captured = io.StringIO()
         with patch("sys.stdout", captured):
-            main(["--challenges-file", challenges_file, "--max-cycles", "12", "--verbose"])
+            main(["--challenges-file", challenges_file, "--max-cycles", "3", "--verbose"])
 
         output = captured.getvalue()
         self.assertIn("Run journal", output)
@@ -352,6 +330,8 @@ class TestConfigFromDefaults(unittest.TestCase):
         self.assertIsInstance(config.security, SecurityConfig)
         self.assertEqual(config.model.provider, "heuristic")
         self.assertEqual(config.platform.max_cycles, 50)
+        self.assertEqual(config.platform.stagnation_threshold, 8)
+        self.assertEqual(config.platform.flag_confidence_threshold, 0.6)
 
     def test_from_defaults_security_matches_constraints(self):
         """from_defaults() security values should match SecurityConstraints defaults."""

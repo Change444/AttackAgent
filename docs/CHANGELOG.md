@@ -10,6 +10,9 @@
 | 版本 | 日期 | 变更说明 |
 |------|------|----------|
 | 3.5 | 2026-04-28 | P2 启发式自由探索 + 模式回注 + Embedding 接入：HeuristicFreeExplorationPlanner, FreeExplorationPlanner Protocol, PatternInjector + PatternLibrary 动态族, EmbeddingModel Protocol + adapters, InMemoryVectorStore cosine similarity, TF-IDF 修正, CJK tokenize, SemanticRetrievalConfig wiring |
+| 3.6 | 2026-04-28 | Phase 1 R1 参数调优：stagnation_threshold 3→8 可配置, flag_confidence_threshold 0.85→0.6 可配置, StrategyLayer/SubmitClassifier 构造参数化, CLI override 支持 |
+| 3.7 | 2026-04-28 | Phase 1 R2 CTFd 适配器：CTFdCompetitionProvider (session auth + API token), 6 方法 Protocol 实现, CLI --ctfd-url/--ctfd-username/--ctfd-password/--ctfd-token |
+| 3.8 | 2026-04-28 | Phase 1 R3 删除假数据路径：_consume_metadata/_hash_payload 删除, _clean_fail 替换 10 个调用点, _extract_candidates/structured-parse/diff-compare 元数据回退删除, runtime.py 1629→1502 行, 测试改写验证干净失败 |
 | 3.4 | 2026-04-27 | P3 LLM 反馈闭环 + 原语参数化：ObservationSummarizer, step.parameters 参数化, ConstraintAwareReasoner enrichment, ReasoningContext.observation_summaries, 安全壳参数 scope 验证, FAMILY_PROGRAMS 保守参数化 |
 | 3.3 | 2026-04-27 | 规划 P3 实施方案：记录 LLM 反馈闭环缺失 + 原语未参数化问题 |
 | 3.2 | 2026-04-27 | CLI 入口 (`python -m attack_agent`)，AttackAgentConfig.from_defaults()，真实靶场 HTTP 集成测试 |
@@ -31,6 +34,9 @@
 | M5 | 真实 PrimitiveAdapter | 2026-04-27 |
 | M6 | LLM 反馈闭环 + 原语参数化 | 2026-04-27 |
 | M7 | P2 启发式自由探索 + 模式回注 + Embedding | 2026-04-28 |
+| M8 | Phase 1 R1 参数调优 | 2026-04-28 |
+| M9 | Phase 1 R2 CTFd 适配器 | 2026-04-28 |
+| M10 | Phase 1 R3 删除假数据路径 | 2026-04-28 |
 
 ---
 
@@ -48,6 +54,9 @@
 | P1 | CLI 入口 + 集成测试 | 2 天 | 2026-04-27 |
 | P2 | 启发式自由探索 + 模式回注 + Embedding 接入 | 5 天 | 2026-04-28 |
 | P3 | LLM 反馈闭环 + 原语参数化 | 4 天 | 2026-04-27 |
+| P0 | 参数调优（stagnation/confidence 可配置） | 0.5 天 | 2026-04-28 |
+| P0 | CTFd Provider 适配器（session auth + API token） | 3 天 | 2026-04-28 |
+| P0 | 删除 _consume_metadata 假数据路径（原语真执行或干净失败） | 1.5 天 | 2026-04-28 |
 
 ---
 
@@ -63,6 +72,9 @@
 | SecurityConstraints 硬编码 | v3.1 | `SecurityConstraints.from_config(SecurityConfig)` 单一源, 默认值对齐 |
 | 无 CLI 入口 | v3.2 | `__main__.py` 提供 `python -m attack_agent` 入口 |
 | 无启发式自由探索 | v3.5 | HeuristicFreeExplorationPlanner, model=None 时双路径自动切换 |
+| 停滞阈值/提交置信度硬编码 | v3.6 | StrategyLayer 构造参数化, stagnation_threshold→8, confidence_threshold→0.6, PlatformConfig 可配置 |
+| 无 CTFd 靶场适配器 | v3.7 | CTFdCompetitionProvider 实现 6 方法 Protocol, session auth + API token, CLI --ctfd-* 参数 |
+| 原语假数据回退掩盖能力不足 | v3.8 | _consume_metadata 删除, 10 个调用点改为 _clean_fail 干净失败, _extract_candidates 不再读取 primitive_payloads, runtime.py 精简 127 行 |
 
 ---
 
@@ -87,8 +99,8 @@
 
 | # | 问题 | 影响范围 | 严重度 |
 |---|------|----------|--------|
-| P1 | LocalHTTPCompetitionProvider 使用私有 6 端点 API，无真实 CTF 平台（CTFd/HackTheBox/PicoCTF）适配器 | 无法对接任何真实靶场 | 致命 |
-| P2 | HTTP transport 无认证机制（无 API key / session token / JWT） | 需要认证的靶场全部无法接入 | 致命 |
+| P1 | ~~无真实 CTF 平台适配器~~ → 已解决 | 无法对接任何真实靶场 → v3.7 CTFdCompetitionProvider 实现 6 方法 Protocol | ~~致命~~ → 已解决 |
+| P2 | ~~HTTP transport 无认证机制~~ → 已解决 | 需要认证的靶场全部无法接入 → v3.7 CTFd session auth + API token | ~~致命~~ → 已解决 |
 | P3 | 实例生命周期模型与真实 CTF 不匹配 | 静态挑战、动态容器等场景 | 高 |
 
 #### 规划层策略缺陷
@@ -97,10 +109,10 @@
 |---|------|----------|--------|
 | S1 | 6 个族关键词过浅，缺少 SSRF/SSTI/CSRF/IDOR/RSA/pwn/协议分析等族 | 多数 CTF 类别无匹配，无匹配时返回 None | 致命 |
 | S2 | FAMILY_PROGRAMS 步骤不含挑战特定参数（URL/路径/payload） | 步骤是空模板，无法执行具体操作 | 高 |
-| S3 | 停滞阈值 3 次连续失败就放弃 | 真实解题通常需 10+ 次迭代 | 高 |
+| S3 | ~~停滞阈值 3 次连续失败就放弃~~ → 已解决 | 真实解题通常需 10+ 次迭代 → v3.6 stagnation_threshold→8 可配置 | ~~高~~ → 已解决 |
 | S4 | max_cycles 默认 12 次 | 远不够真实解题所需 | 高 |
 | S5 | switch_path() 是空 stub | 文档声称有路径切换功能，实际不存在 | 高 |
-| S6 | flag 提交置信度阈值 0.85 过高 | 可能拒绝正确 flag | 中 |
+| S6 | ~~flag 提交置信度阈值 0.85 过高~~ → 已解决 | 可能拒绝正确 flag → v3.6 flag_confidence_threshold→0.6 可配置 | ~~中~~ → 已解决 |
 | S7 | 无多族组合攻击链 | 只选最高得分族，无法组合跨族策略 | 中 |
 | S8 | catch-22：DynamicPatternComposer 需要 3+ 成功案例，但 3 水失败就放弃 | 模式发现闭环无法闭合 | 中 |
 
@@ -108,7 +120,7 @@
 
 | # | 问题 | 说明 | 严重度 |
 |---|------|------|--------|
-| A1 | 原语双路径膨胀 | 每个原语有真实+回退两条路径，runtime.py 1629 行，假数据掩盖能力不足 | 高 |
+| A1 | ~~原语双路径膨胀~~ → 已解决 | 每个原语有真实+回退两条路径，假数据掩盖能力不足 → v3.8 删除假数据路径，原语真执行或干净失败，runtime.py 1629→1502 行 | ~~高~~ → 已解决 |
 | A2 | 模式图过于静态 | PatternLibrary.build() 一次性构建，运行中只标记节点状态不重组 | 中 |
 | A3 | Dispatcher/Strategy 6 层间接调用 | 最终效果只是"选一个族模板执行它" | 低 |
 
@@ -132,15 +144,15 @@
 
 ### 四阶段解决计划
 
-#### Phase 1：让系统能跑起来（P0，约 5 天）
+#### Phase 1：让系统能跑起来（P0，已完成 ✅）
 
-| # | 任务 | 工作量 | 交付物 |
-|---|------|--------|--------|
-| R1 | 参数调优：max_cycles→50, 停滞阈值→8, 提交置信度→0.6 | 0.5 天 | 配置变更 + 测试 |
-| R2 | CTFd Provider 适配器（含 session auth） | 3 天 | `ctfd_provider.py` + 测试 |
-| R3 | 删除 `_consume_metadata` 假数据路径 | 1.5 天 | runtime.py 精简 + 测试更新 |
+| # | 任务 | 工作量 | 交付物 | 完成日期 |
+|---|------|--------|--------|----------|
+| R1 | 参数调优：max_cycles→50, 停滞阈值→8, 提交置信度→0.6 | 0.5 天 | 配置变更 + 测试 | 2026-04-28 |
+| R2 | CTFd Provider 适配器（含 session auth） | 3 天 | `ctfd_provider.py` + 测试 | 2026-04-28 |
+| R3 | 删除 `_consume_metadata` 假数据路径 | 1.5 天 | runtime.py 精简 + 测试更新 | 2026-04-28 |
 
-**Phase 1 目标**：系统连接真实 CTFd 靶场，原语真执行或干净失败，不再假装工作。
+**Phase 1 目标已达成**：系统连接真实 CTFd 靶场，原语真执行或干净失败，不再假装工作。
 
 #### Phase 2：补齐原语能力（P1，约 5 天）
 

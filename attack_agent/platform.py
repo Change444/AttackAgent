@@ -32,6 +32,14 @@ class CompetitionPlatform:
         self.controller = Controller(provider, self.state_graph)
         self.runtime = WorkerRuntime()
 
+        # 从 AttackAgentConfig 提取策略阈值
+        if agent_config is not None:
+            stag_thr = agent_config.platform.stagnation_threshold
+            conf_thr = agent_config.platform.flag_confidence_threshold
+        else:
+            stag_thr = 8
+            conf_thr = 0.6
+
         # 从 AttackAgentConfig.security 构建 SecurityConstraints（单一真实源）
         if agent_config is not None:
             security_constraints = SecurityConstraints.from_config(agent_config.security)
@@ -71,7 +79,9 @@ class CompetitionPlatform:
                 pattern_composer=composer,
                 config=dual_config,
             )
-            self.strategy = StrategyLayer(enhanced)
+            self.strategy = StrategyLayer(enhanced,
+                stagnation_threshold=stag_thr,
+                confidence_threshold=conf_thr)
         else:
             heuristic = reasoner or HeuristicReasoner()
             shell = LightweightSecurityShell(security_constraints)
@@ -93,7 +103,9 @@ class CompetitionPlatform:
                 pattern_composer=heuristic_free_planner.pattern_composer,
                 config=dual_config,
             )
-            self.strategy = StrategyLayer(enhanced)
+            self.strategy = StrategyLayer(enhanced,
+                stagnation_threshold=stag_thr,
+                confidence_threshold=conf_thr)
 
         self.dispatcher = Dispatcher(
             self.state_graph, self.runtime, self.strategy,

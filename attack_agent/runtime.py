@@ -31,8 +31,21 @@ from .platform_models import (
 )
 
 
-def _hash_payload(payload: dict[str, object]) -> str:
-    return hashlib.sha1(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:12]
+def _match_tags(item: dict[str, object], required_tags: list[str]) -> bool:
+    if not required_tags:
+        return True
+    tags = set(item.get("tags", []))
+    return bool(tags.intersection(required_tags))
+
+
+def _clean_fail(primitive_name: str) -> ActionOutcome:
+    """Return a clean failure for primitives without config or real execution capability."""
+    return ActionOutcome(
+        status="failed",
+        cost=0.0,
+        novelty=0.0,
+        failure_reason=f"no_config_available: {primitive_name} requires step.parameters or instance metadata configuration",
+    )
 
 
 @dataclass(slots=True)
@@ -73,109 +86,15 @@ class PrimitiveAdapter:
             return _execute_code_sandbox(step, bundle, sandbox)
         if step.primitive == "extract-candidate":
             return _extract_candidates(step, bundle)
-        return _consume_metadata(step, bundle, self.spec.name)
+        return _clean_fail(self.spec.name)
 
 
-def _match_tags(item: dict[str, object], required_tags: list[str]) -> bool:
-    if not required_tags:
-        return True
-    tags = set(item.get("tags", []))
-    return bool(tags.intersection(required_tags))
-
-
-def _consume_metadata(step: PrimitiveActionStep, bundle: TaskBundle, primitive_name: str) -> ActionOutcome:
-    metadata = bundle.instance.metadata
-    payloads = metadata.get("primitive_payloads", {}).get(primitive_name, [])
-    required_tags = list(step.parameters.get("required_tags", []))
-    observations: list[Observation] = []
-    artifacts: list[Artifact] = []
-    hypotheses: list[Hypothesis] = []
-    candidate_flags: list[CandidateFlag] = []
-    total_cost = float(metadata.get("primitive_costs", {}).get(primitive_name, 1.0))
-    for item in payloads:
-        if not _match_tags(item, required_tags):
-            continue
-        item_type = str(item.get("type", "observation"))
-        if item_type == "observation":
-            obs_id = str(item.get("id", new_id("observation")))
-            if obs_id in bundle.known_observation_ids:
-                continue
-            payload = dict(item.get("payload", {}))
-            if "text" in item:
-                payload["text"] = str(item["text"])
-            observations.append(
-                Observation(
-                    id=obs_id,
-                    kind=str(item.get("kind", primitive_name)),
-                    source=primitive_name,
-                    target=bundle.target,
-                    payload=payload,
-                    confidence=float(item.get("confidence", 0.8)),
-                    novelty=float(item.get("novelty", 0.6)),
-                )
-            )
-        elif item_type == "artifact":
-            artifact_id = str(item.get("id", new_id("artifact")))
-            if artifact_id in bundle.known_artifact_ids:
-                continue
-            metadata_payload = dict(item.get("metadata", {}))
-            if "content" in item:
-                metadata_payload["content"] = str(item["content"])
-            artifacts.append(
-                Artifact(
-                    id=artifact_id,
-                    kind=str(item.get("kind", "artifact")),
-                    location=str(item.get("location", bundle.target)),
-                    fingerprint=str(item.get("fingerprint", _hash_payload(metadata_payload))),
-                    metadata=metadata_payload,
-                    evidence_refs=list(item.get("evidence_refs", [])),
-                )
-            )
-        elif item_type == "hypothesis":
-            hypothesis_id = str(item.get("id", new_id("hypothesis")))
-            if hypothesis_id in bundle.known_hypothesis_ids:
-                continue
-            hypotheses.append(
-                Hypothesis(
-                    id=hypothesis_id,
-                    statement=str(item["statement"]),
-                    preconditions=list(item.get("preconditions", [])),
-                    supporting_observations=list(item.get("supporting_observations", [])),
-                    confidence=float(item.get("confidence", 0.75)),
-                )
-            )
-        elif item_type == "candidate_flag":
-            key = str(item.get("dedupe_key", item.get("value", "")))
-            if key in bundle.known_candidate_keys:
-                continue
-            value = str(item["value"])
-            candidate_flags.append(
-                CandidateFlag(
-                    value=value,
-                    source_chain=[primitive_name, bundle.action_program.id],
-                    confidence=float(item.get("confidence", 0.95)),
-                    format_match=bool(re.fullmatch(bundle.challenge.flag_pattern, value)),
-                    dedupe_key=key,
-                    evidence_refs=list(item.get("evidence_refs", [])),
-                )
-            )
-    novelty = sum(observation.novelty for observation in observations) + (0.4 * len(artifacts)) + (0.3 * len(hypotheses)) + (0.5 * len(candidate_flags))
-    return ActionOutcome(
-        status="ok" if novelty > 0 else "failed",
-        observations=observations,
-        artifacts=artifacts,
-        derived_hypotheses=hypotheses,
-        candidate_flags=candidate_flags,
-        cost=total_cost,
-        novelty=novelty,
-        failure_reason=None if novelty > 0 else "no_new_outputs",
-    )
 
 
 def _execute_http_request(step: PrimitiveActionStep, bundle: TaskBundle, session_manager: HttpSessionManager | None = None) -> ActionOutcome:
     request_specs = _resolve_http_request_specs(step, bundle)
     if not request_specs:
-        return _consume_metadata(step, bundle, "http-request")
+        return _clean_fail("http-request")
     observations: list[Observation] = []
     artifacts: list[Artifact] = []
     total_cost = float(bundle.instance.metadata.get("primitive_costs", {}).get("http-request", 1.0))
@@ -231,7 +150,7 @@ def _execute_http_request(step: PrimitiveActionStep, bundle: TaskBundle, session
 def _execute_browser_inspect(step: PrimitiveActionStep, bundle: TaskBundle, session_manager: HttpSessionManager | None = None) -> ActionOutcome:
     inspect_specs = _resolve_browser_inspect_specs(step, bundle)
     if not inspect_specs:
-        return _consume_metadata(step, bundle, "browser-inspect")
+        return _clean_fail("browser-inspect")
     observations: list[Observation] = []
     total_cost = float(bundle.instance.metadata.get("primitive_costs", {}).get("browser-inspect", 1.4))
     for index, spec in enumerate(inspect_specs):
@@ -283,7 +202,7 @@ def _execute_browser_inspect(step: PrimitiveActionStep, bundle: TaskBundle, sess
 def _execute_binary_inspect(step: PrimitiveActionStep, bundle: TaskBundle) -> ActionOutcome:
     inspect_specs = _resolve_binary_inspect_specs(step, bundle)
     if not inspect_specs:
-        return _consume_metadata(step, bundle, "binary-inspect")
+        return _clean_fail("binary-inspect")
     observations: list[Observation] = []
     total_cost = float(bundle.instance.metadata.get("primitive_costs", {}).get("binary-inspect", 1.2))
     for index, spec in enumerate(inspect_specs):
@@ -315,7 +234,7 @@ def _execute_binary_inspect(step: PrimitiveActionStep, bundle: TaskBundle) -> Ac
 def _execute_artifact_scan(step: PrimitiveActionStep, bundle: TaskBundle, session_manager: HttpSessionManager | None = None) -> ActionOutcome:
     inspect_specs = _resolve_artifact_scan_specs(step, bundle)
     if not inspect_specs:
-        return _consume_metadata(step, bundle, "artifact-scan")
+        return _clean_fail("artifact-scan")
     observations: list[Observation] = []
     artifacts: list[Artifact] = []
     total_cost = float(bundle.instance.metadata.get("primitive_costs", {}).get("artifact-scan", 1.2))
@@ -886,7 +805,7 @@ def _parse_html_page(html: str, base_url: str) -> dict[str, object]:
 def _execute_session_materialize(step: PrimitiveActionStep, bundle: TaskBundle, session_manager: HttpSessionManager | None = None) -> ActionOutcome:
     session_config = _resolve_session_materialize_specs(step, bundle)
     if not session_config:
-        return _consume_metadata(step, bundle, "session-materialize")
+        return _clean_fail("session-materialize")
     observations: list[Observation] = []
     total_cost = float(bundle.instance.metadata.get("primitive_costs", {}).get("session-materialize", 1.1))
     for index, spec in enumerate(session_config):
@@ -985,20 +904,11 @@ def _execute_structured_parse(step: PrimitiveActionStep, bundle: TaskBundle) -> 
     parse_source = step.parameters.get("parse_source")
     fmt = step.parameters.get("format")
     if parse_source is None or fmt is None:
-        return _consume_metadata(step, bundle, "structured-parse")
+        return _clean_fail("structured-parse")
     source_id = str(parse_source)
     source_obs = bundle.completed_observations.get(source_id)
     if source_obs is None:
-        for item in bundle.instance.metadata.get("primitive_payloads", {}).get("structured-parse", []):
-            if str(item.get("id", "")) == source_id:
-                source_obs = Observation(
-                    id=source_id, kind="metadata", source="structured-parse",
-                    target=bundle.target, payload=dict(item.get("payload", {})),
-                    confidence=0.8, novelty=0.6,
-                )
-                break
-    if source_obs is None:
-        return _consume_metadata(step, bundle, "structured-parse")
+        return _clean_fail("structured-parse")
     extract_fields = list(step.parameters.get("extract_fields", []))
     observations: list[Observation] = []
     hypotheses: list[Hypothesis] = []
@@ -1085,11 +995,11 @@ def _execute_diff_compare(step: PrimitiveActionStep, bundle: TaskBundle) -> Acti
     baseline_id = step.parameters.get("baseline_observation_id")
     variant_id = step.parameters.get("variant_observation_id")
     if baseline_id is None or variant_id is None:
-        return _consume_metadata(step, bundle, "diff-compare")
+        return _clean_fail("diff-compare")
     baseline_text = _get_observation_text(str(baseline_id), bundle)
     variant_text = _get_observation_text(str(variant_id), bundle)
     if baseline_text is None or variant_text is None:
-        return _consume_metadata(step, bundle, "diff-compare")
+        return _clean_fail("diff-compare")
     observations: list[Observation] = []
     total_cost = float(bundle.instance.metadata.get("primitive_costs", {}).get("diff-compare", 0.7))
     diff_result = _perform_diff_compare(baseline_text, variant_text, str(baseline_id), str(variant_id))
@@ -1120,11 +1030,6 @@ def _get_observation_text(obs_id: str, bundle: TaskBundle) -> str | None:
     obs = bundle.completed_observations.get(obs_id)
     if obs is not None:
         return obs.payload.get("text", json.dumps(obs.payload, ensure_ascii=True, default=str))
-    for item in bundle.instance.metadata.get("primitive_payloads", {}).get("diff-compare", []):
-        if str(item.get("id", "")) == obs_id:
-            payload = item.get("payload", {})
-            if isinstance(payload, dict):
-                return payload.get("text", json.dumps(payload, ensure_ascii=True, default=str))
     return None
 
 
@@ -1342,7 +1247,7 @@ def _execute_code_sandbox(step: PrimitiveActionStep, bundle: TaskBundle, sandbox
                     id=artifact_id,
                     kind=str(artifact_payload.get("kind", "derived")),
                     location=str(artifact_payload.get("location", bundle.target)),
-                    fingerprint=str(artifact_payload.get("fingerprint", _hash_payload(artifact_payload))),
+                    fingerprint=str(artifact_payload.get("fingerprint", hashlib.sha1(json.dumps(artifact_payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:12])),
                     metadata=artifact_payload,
                 )
             )
@@ -1372,37 +1277,6 @@ def _execute_code_sandbox(step: PrimitiveActionStep, bundle: TaskBundle, sandbox
 def _extract_candidates(step: PrimitiveActionStep, bundle: TaskBundle) -> ActionOutcome:
     texts: list[str] = []
     candidate_flags: list[CandidateFlag] = []
-    for item in bundle.instance.metadata.get("primitive_payloads", {}).get("extract-candidate", []):
-        if not _match_tags(item, list(step.parameters.get("required_tags", []))):
-            continue
-        if item.get("type") == "candidate_flag" and "value" in item:
-            value = str(item["value"])
-            key = str(item.get("dedupe_key", value))
-            if key in bundle.known_candidate_keys:
-                continue
-            candidate_flags.append(
-                CandidateFlag(
-                    value=value,
-                    source_chain=["extract-candidate", bundle.action_program.id],
-                    confidence=float(item.get("confidence", 0.95)),
-                    format_match=bool(re.fullmatch(bundle.challenge.flag_pattern, value)),
-                    dedupe_key=key,
-                    evidence_refs=list(item.get("evidence_refs", [])),
-                )
-            )
-            continue
-        if "value" in item:
-            texts.append(str(item["value"]))
-    for group in bundle.instance.metadata.get("primitive_payloads", {}).values():
-        for row in group:
-            if "text" in row:
-                texts.append(str(row["text"]))
-            payload = row.get("payload", {})
-            if isinstance(payload, dict):
-                texts.append(json.dumps(payload, ensure_ascii=True, default=str))
-            metadata = row.get("metadata", {})
-            if isinstance(metadata, dict):
-                texts.append(json.dumps(metadata, ensure_ascii=True, default=str))
     for obs in bundle.completed_observations.values():
         obs_text = obs.payload.get("text", "")
         if obs_text:

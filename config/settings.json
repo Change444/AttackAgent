@@ -14,7 +14,9 @@
   "platform": {
     "max_cycles": 50,
     "timeout_seconds": 300,
-    "enable_auto_submit": true
+    "enable_auto_submit": true,
+    "stagnation_threshold": 8,
+    "flag_confidence_threshold": 0.6
   },
   "dual_path": {
     "structured_path_weight": 0.7,

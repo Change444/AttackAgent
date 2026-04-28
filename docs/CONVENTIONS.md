@@ -29,7 +29,7 @@
 
 ## Backward Compatibility
 
-- 元数据回退路径 `_consume_metadata` **计划删除**（Phase 1 R3）——假数据掩盖真实能力不足，原语应真执行或干净失败
+- 元数据回退路径 `_consume_metadata` **已删除**（Phase 1 R3, v3.8）——原语无配置时返回 `_clean_fail` 干净失败
 - 删除前：配置新增字段必须提供默认值，确保现有 JSON 文件仍可加载
 - 删除前：公共方法签名不得删除，需变更时提供过渡期
 

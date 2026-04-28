@@ -13,6 +13,8 @@ class PlatformConfig:
     max_cycles: int = 50
     timeout_seconds: int = 300
     enable_auto_submit: bool = True
+    stagnation_threshold: int = 8
+    flag_confidence_threshold: float = 0.6
 
 
 @dataclass(slots=True)

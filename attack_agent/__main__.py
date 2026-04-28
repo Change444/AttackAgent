@@ -3,7 +3,8 @@
 Usage examples:
   python -m attack_agent --config config/settings.json
   python -m attack_agent --provider-url http://127.0.0.1:8080
-  python -m attack_agent --provider-url http://127.0.0.1:8080 --model openai
+  python -m attack_agent --ctfd-url http://ctfd.example.com --ctfd-token <api_token>
+  python -m attack_agent --ctfd-url http://ctfd.example.com --ctfd-username admin --ctfd-password pass
   python -m attack_agent  # heuristic mode, InMemoryCompetitionProvider demo
 """
 from __future__ import annotations
@@ -19,10 +20,22 @@ from .model_adapter import build_model_from_config, is_available
 from .platform import CompetitionPlatform
 from .platform_models import ChallengeDefinition
 from .provider import InMemoryCompetitionProvider, LocalHTTPCompetitionProvider
+from .ctfd_provider import CTFdCompetitionProvider
+from .ctfd_provider import CTFdCompetitionProvider
 
 
-def _build_provider(provider_url: str | None, challenges_file: str | None) -> object:
+def _build_provider(provider_url: str | None, challenges_file: str | None,
+                    ctfd_url: str | None, ctfd_username: str | None,
+                    ctfd_password: str | None, ctfd_token: str | None) -> object:
     """Construct a CompetitionProvider from CLI options."""
+    if ctfd_url:
+        return CTFdCompetitionProvider(
+            base_url=ctfd_url,
+            username=ctfd_username,
+            password=ctfd_password,
+            api_token=ctfd_token,
+        )
+
     if provider_url:
         return LocalHTTPCompetitionProvider(provider_url)
 
@@ -97,6 +110,30 @@ def main(argv: list[str] | None = None) -> None:
         help="Path to JSON file with challenge definitions (for InMemoryCompetitionProvider)",
     )
     parser.add_argument(
+        "--ctfd-url",
+        type=str,
+        default=None,
+        help="CTFd platform base URL (e.g. http://ctfd.example.com)",
+    )
+    parser.add_argument(
+        "--ctfd-username",
+        type=str,
+        default=None,
+        help="CTFd username for session auth (requires --ctfd-password)",
+    )
+    parser.add_argument(
+        "--ctfd-password",
+        type=str,
+        default=None,
+        help="CTFd password for session auth",
+    )
+    parser.add_argument(
+        "--ctfd-token",
+        type=str,
+        default=None,
+        help="CTFd API token for Bearer auth",
+    )
+    parser.add_argument(
         "--model",
         type=str,
         default=None,
@@ -108,6 +145,18 @@ def main(argv: list[str] | None = None) -> None:
         type=int,
         default=None,
         help="Override max solve cycles (overrides config file platform.max_cycles)",
+    )
+    parser.add_argument(
+        "--stagnation-threshold",
+        type=int,
+        default=None,
+        help="Override stagnation abandon threshold (overrides config file platform.stagnation_threshold)",
+    )
+    parser.add_argument(
+        "--confidence-threshold",
+        type=float,
+        default=None,
+        help="Override flag submission confidence threshold (overrides config file platform.flag_confidence_threshold)",
     )
     parser.add_argument(
         "--verbose", "-v",
@@ -129,10 +178,17 @@ def main(argv: list[str] | None = None) -> None:
         agent_config.model.provider = args.model
     if args.max_cycles is not None:
         agent_config.platform.max_cycles = args.max_cycles
+    if args.stagnation_threshold is not None:
+        agent_config.platform.stagnation_threshold = args.stagnation_threshold
+    if args.confidence_threshold is not None:
+        agent_config.platform.flag_confidence_threshold = args.confidence_threshold
 
     _setup_logging(agent_config)
 
-    provider = _build_provider(args.provider_url, args.challenges_file)
+    provider = _build_provider(
+        args.provider_url, args.challenges_file,
+        args.ctfd_url, args.ctfd_username, args.ctfd_password, args.ctfd_token,
+    )
     model = _build_model(agent_config)
 
     platform = CompetitionPlatform(provider, model=model, agent_config=agent_config)

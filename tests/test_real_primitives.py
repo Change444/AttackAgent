@@ -248,20 +248,16 @@ class SessionMaterializeTests(unittest.TestCase):
         self.assertEqual(obs.payload["status_code"], 200)
         self.assertIn("auth=token123", obs.payload["cookies_obtained"])
 
-    def test_session_materialize_fallback_to_metadata(self):
-        metadata = {
-            "primitive_payloads": {
-                "session-materialize": [
-                    {"type": "observation", "payload": {"session_type": "cookie"}, "confidence": 0.9}
-                ]
-            }
-        }
-        bundle = _make_bundle(metadata=metadata)
+    def test_session_materialize_no_config_cleanly_fails(self):
+        """Without session_materialize config, primitive returns clean failure."""
+        bundle = _make_bundle(metadata={})
         step = PrimitiveActionStep(primitive="session-materialize", instruction="session", parameters={})
         from attack_agent.runtime import _execute_session_materialize
         outcome = _execute_session_materialize(step, bundle, None)
-        self.assertEqual(outcome.status, "ok")
-        self.assertTrue(len(outcome.observations) > 0)
+        self.assertEqual(outcome.status, "failed")
+        self.assertIn("no_config_available", outcome.failure_reason)
+        self.assertEqual(outcome.novelty, 0.0)
+        self.assertEqual(len(outcome.observations), 0)
 
 
 class StructuredParseTests(unittest.TestCase):
@@ -301,20 +297,17 @@ class StructuredParseTests(unittest.TestCase):
         self.assertEqual(len(obs.payload["forms"]), 1)
         self.assertEqual(obs.payload["forms"][0]["method"], "POST")
 
-    def test_structured_parse_fallback_to_metadata(self):
-        metadata = {
-            "primitive_payloads": {
-                "structured-parse": [
-                    {"type": "observation", "id": "sp-1", "payload": {"parsed": "data"}, "confidence": 0.9}
-                ]
-            }
-        }
-        bundle = _make_bundle(metadata=metadata)
+    def test_structured_parse_no_config_cleanly_fails(self):
+        """Without parse_source/format parameters, structured-parse returns clean failure."""
+        bundle = _make_bundle(metadata={})
         step = PrimitiveActionStep(primitive="structured-parse", instruction="parse",
                                     parameters={})
         from attack_agent.runtime import _execute_structured_parse
         outcome = _execute_structured_parse(step, bundle)
-        self.assertEqual(outcome.status, "ok")
+        self.assertEqual(outcome.status, "failed")
+        self.assertIn("no_config_available", outcome.failure_reason)
+        self.assertEqual(outcome.novelty, 0.0)
+        self.assertEqual(len(outcome.observations), 0)
 
     def test_perform_structured_parse_headers(self):
         payload = {"headers": {"X-Secret": "flag{header}", "Authorization": "Bearer abc", "Content-Type": "text/html"}}
@@ -359,19 +352,16 @@ class DiffCompareTests(unittest.TestCase):
         self.assertEqual(obs.kind, "diff-result")
         self.assertIn("diff_lines", obs.payload)
 
-    def test_diff_compare_fallback_to_metadata(self):
-        metadata = {
-            "primitive_payloads": {
-                "diff-compare": [
-                    {"type": "observation", "payload": {"change_count": 3}, "confidence": 0.9}
-                ]
-            }
-        }
-        bundle = _make_bundle(metadata=metadata)
+    def test_diff_compare_no_config_cleanly_fails(self):
+        """Without baseline/variant IDs, diff-compare returns clean failure."""
+        bundle = _make_bundle(metadata={})
         step = PrimitiveActionStep(primitive="diff-compare", instruction="compare", parameters={})
         from attack_agent.runtime import _execute_diff_compare
         outcome = _execute_diff_compare(step, bundle)
-        self.assertEqual(outcome.status, "ok")
+        self.assertEqual(outcome.status, "failed")
+        self.assertIn("no_config_available", outcome.failure_reason)
+        self.assertEqual(outcome.novelty, 0.0)
+        self.assertEqual(len(outcome.observations), 0)
 
 
 class ExtractCandidateEnhancedTests(unittest.TestCase):

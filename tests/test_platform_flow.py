@@ -505,52 +505,60 @@ class PlatformFlowTests(unittest.TestCase):
             server.server_close()
             thread.join(timeout=2)
 
-    def test_http_request_without_http_request_config_falls_back_to_metadata(self) -> None:
+    def test_http_request_without_real_target_fails_cleanly(self) -> None:
+        """Without a real HTTP target, primitives fail cleanly instead of pretending to work via metadata."""
         platform = build_identity_platform()
         platform.solve_all(max_cycles=12)
         record = platform.state_graph.projects["project:web-auth"]
-        observation = record.observations["obs-auth-surface"]
-        self.assertEqual("http-surface", observation.kind)
-        self.assertEqual([{"name": "http", "port": 8080}], observation.payload["services"])
-        self.assertEqual(
-            [{"path": "/"}, {"path": "/login"}, {"path": "/profile"}, {"path": "/admin"}],
-            observation.payload["endpoints"],
-        )
-        self.assertNotIn("status_code", observation.payload)
+        # System no longer fakes observations from primitive_payloads metadata
+        self.assertNotEqual(ProjectStage.DONE, record.snapshot.stage)
 
-    def test_unseen_web_auth_flow_uses_identity_pattern_and_solves(self) -> None:
+    def test_identity_pattern_without_real_target_fails_cleanly(self) -> None:
+        """Without a real target, the identity-boundary pattern cannot solve via fake metadata."""
         platform = build_identity_platform()
         platform.solve_all(max_cycles=12)
         record = platform.state_graph.projects["project:web-auth"]
-        self.assertEqual(ProjectStage.DONE, record.snapshot.stage)
-        self.assertEqual("identity-boundary", record.pattern_graph.active_family)
-        self.assertTrue(record.submission_history)
+        # System no longer fakes solving through primitive_payloads
+        self.assertNotEqual(ProjectStage.DONE, record.snapshot.stage)
+        self.assertFalse(record.submission_history)
 
-    def test_browser_pattern_selects_browser_profile(self) -> None:
+    def test_browser_pattern_without_real_target_fails_cleanly(self) -> None:
+        """Without a real browser target, platform runs but cannot solve via fake metadata."""
         platform = build_browser_platform()
         platform.solve_all(max_cycles=12)
         record = platform.state_graph.projects["project:web-render"]
-        self.assertEqual(WorkerProfile.BROWSER, record.snapshot.worker_profile)
-        self.assertTrue(record.candidate_flags)
+        # System no longer fakes candidate flags from primitive_payloads
+        self.assertFalse(record.candidate_flags)
 
-    def test_artifact_pattern_solves_without_new_plugin_code(self) -> None:
+    def test_artifact_pattern_without_real_target_fails_cleanly(self) -> None:
+        """Without a real artifact target, artifact pattern cannot solve via fake metadata."""
         platform = build_artifact_platform()
         platform.solve_all(max_cycles=12)
         record = platform.state_graph.projects["project:misc-file"]
-        self.assertEqual(ProjectStage.DONE, record.snapshot.stage)
+        # System no longer fakes solving through primitive_payloads
+        self.assertNotEqual(ProjectStage.DONE, record.snapshot.stage)
 
-    def test_binary_pattern_solves_without_new_plugin_code(self) -> None:
+    def test_binary_pattern_without_real_target_fails_cleanly(self) -> None:
+        """Without a real binary target, binary pattern cannot solve via fake metadata."""
         platform = build_binary_platform()
         platform.solve_all(max_cycles=12)
         record = platform.state_graph.projects["project:rev-1"]
-        self.assertEqual(ProjectStage.DONE, record.snapshot.stage)
-
-    def test_low_confidence_flag_is_blocked(self) -> None:
-        platform = build_identity_platform(flag_confidence=0.5)
-        platform.solve_all(max_cycles=12)
-        record = platform.state_graph.projects["project:web-auth"]
+        # System no longer fakes solving through primitive_payloads
         self.assertNotEqual(ProjectStage.DONE, record.snapshot.stage)
-        self.assertFalse(record.submission_history)
+
+    def test_low_confidence_flag_is_blocked_by_strategy(self) -> None:
+        """SubmitClassifier rejects flags below the confidence threshold."""
+        from attack_agent.strategy import SubmitClassifier
+        from attack_agent.platform_models import CandidateFlag
+        classifier = SubmitClassifier(confidence_threshold=0.6)
+        low_conf_flag = CandidateFlag(
+            value="flag{low}", source_chain=["test"], confidence=0.5,
+            format_match=True, dedupe_key="flag{low}",
+        )
+        # Low confidence flags are rejected regardless of project context
+        decision = classifier.classify(None, low_conf_flag, set())
+        self.assertFalse(decision.accepted)
+        self.assertEqual("confidence too low", decision.reason)
 
     def test_timeout_and_requeue_are_recorded(self) -> None:
         platform = build_identity_platform()
@@ -573,10 +581,7 @@ class PlatformFlowTests(unittest.TestCase):
         platform.solve_all(max_cycles=12)
         view = WebConsoleView(platform.state_graph).render_pattern_graph_text("project:web-auth")
         self.assertIn("project:web-auth", view)
-        self.assertIn("active_family=identity-boundary", view)
-        self.assertIn("identity-boundary:observe", view)
         self.assertIn("family=identity-boundary", view)
-        self.assertIn("status=resolved", view)
 
     def test_console_view_renders_single_project_run_journal(self) -> None:
         platform = build_identity_platform()

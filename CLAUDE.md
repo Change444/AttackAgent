@@ -67,7 +67,7 @@ platform.solve_all()
 - 安全壳在 runtime 执行前验证；critical 违规阻止执行
 - 参数优先级：`step.parameters` > metadata defaults > hardcoded defaults
 - SecurityConstraints 值来自 SecurityConfig（单一源），见 `attack_agent/constraints.py`
-- 原语无 instance.metadata 配置时走 `_consume_metadata` 回退路径
+- 原语无配置时干净失败（`_clean_fail`），不再假装工作
 - CodeSandbox 规则见 `attack_agent/apg.py` SAFE_BUILTINS / SAFE_IMPORTS
 - 配置字段定义见 `attack_agent/config.py` 和 `config/settings.json`
 - 可选依赖见 `pyproject.toml`
@@ -79,11 +79,9 @@ platform.solve_all()
 
 ## Known Limitations (摘要)
 
-当前系统**无法接入真实 CTF 靶场并成功解题**。关键差距：
-- 无 CTFd/HackTheBox Provider 适配器 + 无认证机制 → 连不上真实靶场
+当前系统**无法成功解题**（已可连接真实 CTFd 靶场）。关键差距：
 - browser-inspect 不执行 JS、http-request 无 multipart/session-materialize 无 CSRF → web 题 85% 不能解
-- 6 族关键词过浅 + 步骤空模板 + 3 次失败放弃 → 规划策略僵硬
-- 原语假数据回退路径掩盖能力不足 → runtime.py 膨胀
+- 6 族关键词过浅 + 步骤空模板 → 规划策略僵硬
 
 **完整问题清单 + 四阶段解决计划**：见 [docs/CHANGELOG.md](docs/CHANGELOG.md) "Current Limitations & Roadmap" 章节
 
