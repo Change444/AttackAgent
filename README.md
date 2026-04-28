@@ -1,81 +1,54 @@
 # AttackAgent
 
-`AttackAgent` is a safe-by-default scaffold for building an authorized CTF competition platform around:
+面向授权靶场和 CTF 竞赛的渗透测试 Agent。核心设计：**约束推理而非候选选择**——框架引导模型决策，不限制创造力。
 
-- a provider/controller/dispatcher control plane
-- a generalized APG solving core
-- a structured state graph as the source of truth
-- a primitive runtime with narrow real adapters plus metadata fallback
-- an optional reasoning layer that stays inside platform guardrails
+本项目**不**包含攻击载荷、互联网扫描或任意命令生成。runtime 仅用于授权本地靶场和受控 fixture。
 
-This repository intentionally does **not** ship exploit payloads, internet scanning logic, or arbitrary command generation. The included runtime is meant for authorized local targets and controlled fixtures.
+## Quick Start
 
-## Quick start
+```bash
+# 安装
+pip install -e .
+# LLM 支持
+pip install -e ".[openai]"   # 或 pip install openai>=1.0
 
-```powershell
-python -m unittest discover -s tests -v
-python -m attack_agent.platform_demo
+# 运行测试
+python -m unittest discover tests/
+
+# 纯规则模式
+python -m attack_agent --config config/settings.json
+
+# 对接 HTTP 靶场
+python -m attack_agent --provider-url http://127.0.0.1:8080
+
+# 接入 LLM
+python -m attack_agent --config config/settings.json --model openai --verbose
 ```
 
-## Resume Work
+## Architecture
 
-When context is running out, resume from these files instead of relying on old chat history:
+| 层 | 核心模块 | 职责 |
+|----|----------|------|
+| 控制层 | CompetitionPlatform | 挑战生命周期，配置加载 |
+| 调度层 | Dispatcher + SecurityShell | 状态机调度，安全壳验证 |
+| 规划层 | EnhancedAPGPlanner | 双路径规划（结构化 + 自由探索） |
+| 执行层 | WorkerRuntime (9 原语) | 真实执行 + session 持久化 |
+| 状态层 | StateGraphService | 单一真实源，事件日志 |
 
-- [Architecture](docs/ARCHITECTURE.md) - 完整的项目架构文档（唯一真实源）
-- [Work Instructions](docs/WORK_INSTRUCTIONS.md) - 开发工作指令
+完整架构详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
-## Canonical path
+## Documentation
 
-The canonical product path is the platform flow rooted at `attack_agent.platform`.
+- [CLAUDE.md](CLAUDE.md) — AI agent onboarding（使用 Claude Code 时首先阅读）
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 架构决策 + 概念设计
+- [docs/CONVENTIONS.md](docs/CONVENTIONS.md) — 编码规则 + 项目约束
+- [docs/CHANGELOG.md](docs/CHANGELOG.md) — 版本历史 + 已完成里程碑
+- [config/settings.json](config/settings.json) — 默认配置
 
-Read and extend the system in this order:
+## Design Choices
 
-- `attack_agent.platform`: canonical platform entry point
-- `attack_agent.controller`: challenge lifecycle and submit policy
-- `attack_agent.dispatcher`: worker scheduling and stage flow
-- `attack_agent.state_graph`: project state, journal, handoff, and memory source of truth
-- `attack_agent.apg`: action-program generation and pattern-graph planning
-- `attack_agent.runtime`: primitive runtime and adapter execution
-- `attack_agent.strategy`: worker profile and family-selection policy
-
-This is the path that matches the current architecture documents and active MVP refactor direction.
-
-## Current stage
-
-The first-stage minimal real primitive loop is now closed:
-
-- `http-request`
-- `browser-inspect`
-- `binary-inspect`
-- `artifact-scan`
-
-Each of these keeps a metadata fallback path for tests and controlled fixtures, but they are still intentionally narrow slices rather than full environment coverage.
-
-## Legacy status
-
-The older single-agent path is no longer part of the product surface.
-
-This repository is actively decommissioning the old single-agent entry points and their tests. Some shared internal modules still remain while platform-facing state and memory internals are migrated more cleanly, but they should not be treated as public or canonical APIs.
-
-## Supporting modules
-
-- `attack_agent.world_state`: structured blackboard used by the state-graph handoff and evidence pipeline
-- `attack_agent.compilers`: progress and retry handoff compilation
-- `attack_agent.apg`: pattern graphs, retrieval memory, APG planner, and code sandbox
-- `attack_agent.reasoning`: heuristic and model-driven reasoning adapters for platform decisions
-- `attack_agent.provider`: local and in-memory competition provider adapters
-- `attack_agent.state_graph`: persistent project graph, entity graph, run journal, and memory views
-- `attack_agent.controller`: competition lifecycle and submit/hint policy
-- `attack_agent.dispatcher`: worker scheduling, heartbeat, timeout, requeue, and stop-loss
-- `attack_agent.runtime`: worker runtime, primitive adapters, and workspace checkpoints
-- `attack_agent.platform`: end-to-end competition platform orchestrator
-- `attack_agent.console`: read-only console snapshot layer
-- `attack_agent.platform_models`: canonical platform-path data structures
-
-## Design choices
-
-- Execution stays constrained to allowed local targets and controlled runtime paths.
-- Primitive adapters are the main extension mechanism, not one plugin per challenge type.
-- The runtime keeps metadata fallback so tests and narrow fixtures stay stable while real branches are added.
-- The state graph service remains the single source of truth for project, journal, evidence, handoff, and pattern status.
-- Reasoning may choose among bounded candidates, but it does not bypass provider, runtime, or state-graph boundaries.
+- 安全壳在执行前验证约束，critical 违规阻止执行
+- 原语适配器是主要扩展机制，不是每种挑战类型一个插件
+- 双路径架构：结构化路径提供稳定回退，自由探索路径利用模型创造力
+- 状态图服务是项目、日志、证据、交接、模式状态的单一真实源
+- 推理在边界候选中选择，不绕过 Provider、Runtime 或 StateGraph 边界
