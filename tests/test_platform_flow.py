@@ -433,8 +433,10 @@ class PlatformFlowTests(unittest.TestCase):
             record = platform.state_graph.projects["project:web-browser-live"]
             observation = record.observations["obs-live-browser"]
             self.assertEqual("browser-live", observation.kind)
-            self.assertEqual("/rendered", requests_seen[0]["path"])
-            self.assertEqual("attack-agent", requests_seen[0]["header"])
+            browser_requests = [r for r in requests_seen if r.get("header") == "attack-agent"]
+            self.assertTrue(len(browser_requests) >= 1, "Expected at least one browser request with X-Browser-Test header")
+            self.assertEqual("/rendered", browser_requests[0]["path"])
+            self.assertEqual("attack-agent", browser_requests[0]["header"])
             self.assertEqual(f"http://127.0.0.1:{server.server_port}/rendered", observation.payload["url"])
             self.assertEqual("Rendered Notes", observation.payload["title"])
             self.assertIn("hidden comment says browser path works", observation.payload["comments"])

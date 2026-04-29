@@ -307,6 +307,8 @@ class DualPathConfig:
     semantic_retrieval_limit: int = 5
     hybrid_score_alpha: float = 0.7
     hybrid_score_beta: float = 0.3
+    path_switch_stagnation_threshold: int = 3
+    multi_family_score_ratio: float = 0.7
 
 
 class FreeExplorationPlanner(Protocol):

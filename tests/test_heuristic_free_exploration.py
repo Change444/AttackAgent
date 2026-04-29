@@ -194,6 +194,27 @@ class TestHeuristicFreeExplorationPlanner(unittest.TestCase):
         self.assertIsInstance(platform.strategy.planner, EnhancedAPGPlanner)
         self.assertIsInstance(platform.strategy.planner.free_exploration_planner, HeuristicFreeExplorationPlanner)
 
+    def test_generate_plan_steps_have_challenge_target_urls(self):
+        """Steps in generated plan should have challenge target URL injected"""
+        challenge = ChallengeDefinition(
+            id="c7", name="SQL Auth", category="web",
+            difficulty="easy", target="http://sql-target:9000",
+            description="sql query injection challenge",
+        )
+        sg, record = _make_record(challenge)
+        planner = self._make_planner(sg.episode_memory)
+        context = PlanningContext(
+            record=record, attempt_count=0,
+            historical_success_rate=0.0, complexity_score=0.5,
+            pattern_confidence=0.0, exploration_budget=3,
+        )
+        program = planner.generate_constrained_plan(context)
+        self.assertIsNotNone(program)
+        http_steps = [s for s in program.steps if s.primitive == "http-request"]
+        self.assertTrue(len(http_steps) > 0)
+        for step in http_steps:
+            self.assertEqual(step.parameters.get("url"), "http://sql-target:9000")
+
 
 if __name__ == "__main__":
     unittest.main()

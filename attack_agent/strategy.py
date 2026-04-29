@@ -87,6 +87,9 @@ class StrategyLayer:
 
     def update_after_outcome(self, record, program: ActionProgram, outcome) -> None:
         self.planner.update_graph(record, program, outcome)
+        # Also update EnhancedAPGPlanner stagnation counter for path switching
+        if hasattr(self.planner, 'record_outcome'):
+            self.planner.record_outcome(record, program, outcome)
         if outcome.status == "ok" and outcome.novelty > 0.0:
             record.stagnation_counter = 0
             return

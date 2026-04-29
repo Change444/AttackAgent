@@ -39,6 +39,9 @@ from attack_agent.runtime import (
     _parse_html_page,
     _perform_diff_compare,
     _perform_structured_parse,
+    _resolve_http_request_specs,
+    _resolve_browser_inspect_specs,
+    _resolve_session_materialize_specs,
 )
 
 
@@ -286,16 +289,15 @@ class SessionMaterializeTests(unittest.TestCase):
         self.assertEqual(obs.payload["status_code"], 200)
         self.assertIn("auth=token123", obs.payload["cookies_obtained"])
 
-    def test_session_materialize_no_config_cleanly_fails(self):
-        """Without session_materialize config, primitive returns clean failure."""
+    def test_session_materialize_no_config_falls_back_to_bundle_target(self):
+        """Without session_materialize config, primitive falls back to bundle.target as login_url."""
         bundle = _make_bundle(metadata={})
         step = PrimitiveActionStep(primitive="session-materialize", instruction="session", parameters={})
         from attack_agent.runtime import _execute_session_materialize
         outcome = _execute_session_materialize(step, bundle, None)
         self.assertEqual(outcome.status, "failed")
-        self.assertIn("no_config_available", outcome.failure_reason)
-        self.assertEqual(outcome.novelty, 0.0)
-        self.assertEqual(len(outcome.observations), 0)
+        # Runtime now falls back to bundle.target as login_url instead of no_config_available
+        self.assertNotIn("no_config_available", outcome.failure_reason)
 
 
 class StructuredParseTests(unittest.TestCase):
@@ -1292,3 +1294,54 @@ class SessionMaterializeEnhancedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _make_fallback_bundle(target="http://127.0.0.1:9999"):
+    """Create a minimal bundle with empty metadata for fallback tests."""
+    challenge = ChallengeDefinition(
+        id="fb-test", name="Fallback", category="web",
+        difficulty="easy", target=target, description="test",
+    )
+    instance = ChallengeInstance(
+        instance_id="fb-inst", challenge_id="fb-test",
+        target=target, status="running", metadata={},
+    )
+    program = ActionProgram(
+        id="prog-fb", goal="test", pattern_nodes=["test:goal"],
+        steps=[PrimitiveActionStep(primitive="http-request", instruction="test", parameters={})],
+        allowed_primitives=["http-request"], verification_rules=[],
+        required_profile=WorkerProfile.NETWORK,
+    )
+    return TaskBundle(
+        project_id="proj-fb", run_id="run-fb", action_program=program,
+        stage=ProjectStage.EXPLORE, worker_profile=WorkerProfile.NETWORK,
+        target=target, challenge=challenge, instance=instance,
+        handoff_summary="", visible_primitives=["http-request"],
+    )
+
+
+class RuntimeFallbackTests(unittest.TestCase):
+    """Test _resolve_*_specs() fallback to bundle.target when metadata and step.parameters are absent."""
+
+    def test_resolve_http_request_specs_fallback_to_bundle_target(self):
+        step = PrimitiveActionStep("http-request", "Fetch", {"required_tags": ["x"]})
+        bundle = _make_fallback_bundle("http://target-host:8080")
+        specs = _resolve_http_request_specs(step, bundle)
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0]["url"], "http://target-host:8080")
+        self.assertEqual(specs[0]["method"], "GET")
+
+    def test_resolve_browser_inspect_specs_fallback_to_bundle_target(self):
+        step = PrimitiveActionStep("browser-inspect", "Inspect", {"required_tags": ["x"]})
+        bundle = _make_fallback_bundle("http://target-host:8080")
+        specs = _resolve_browser_inspect_specs(step, bundle)
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0]["url"], "http://target-host:8080")
+
+    def test_resolve_session_materialize_specs_fallback_to_bundle_target(self):
+        step = PrimitiveActionStep("session-materialize", "Login", {"required_tags": ["x"]})
+        bundle = _make_fallback_bundle("http://target-host:8080")
+        specs = _resolve_session_materialize_specs(step, bundle)
+        self.assertEqual(len(specs), 1)
+        self.assertEqual(specs[0]["login_url"], "http://target-host:8080")
+        self.assertEqual(specs[0]["method"], "POST")

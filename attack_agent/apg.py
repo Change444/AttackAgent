@@ -10,6 +10,8 @@ from .models import new_id
 from .platform_models import (
     ActionProgram,
     ActionOutcome,
+    ChallengeDefinition,
+    ChallengeInstance,
     EpisodeEntry,
     Hypothesis,
     PatternEdge,
@@ -511,17 +513,31 @@ class APGPlanner:
             return None, memory_hits
         record.pattern_graph.active_family = family
         steps = list(decision.steps)
+        secondary_families = decision.secondary_families
+        # Enrich secondary_families from matching candidate if not already present
+        if not secondary_families:
+            matching_candidates = [c for c in candidates if c.family == decision.family and c.node_id == decision.node_id]
+            if matching_candidates:
+                secondary_families = matching_candidates[0].secondary_families
+        pattern_nodes = [node.id]
+        for sec_fam in secondary_families:
+            sec_node = self._next_node(record.pattern_graph, sec_fam)
+            if sec_node is not None:
+                pattern_nodes.append(sec_node.id)
+        rationale = decision.rationale
+        if secondary_families:
+            rationale += f" + 融合 {','.join(secondary_families)} 族步骤"
         return (
             ActionProgram(
                 id=new_id("program"),
-                goal=node.label,
-                pattern_nodes=[node.id],
+                goal=node.label if not secondary_families else f"{node.label} (融合 {','.join(secondary_families)})",
+                pattern_nodes=pattern_nodes,
                 steps=steps,
                 allowed_primitives=list(dict.fromkeys(step.primitive for step in steps)),
                 verification_rules=["flag_pattern", "novelty_positive"],
                 required_profile=FAMILY_PROFILES.get(family, WorkerProfile.HYBRID),
                 memory_refs=[hit.episode_id for hit in memory_hits],
-                rationale=decision.rationale,
+                rationale=rationale,
                 planner_source=decision.source,
             ),
             memory_hits,
@@ -563,7 +579,7 @@ class APGPlanner:
                 scores[family] = -1.0
         return scores
 
-    def _plan_candidates(self, record, family_scores: dict[str, float]) -> list[PlanCandidate]:
+    def _plan_candidates(self, record, family_scores: dict[str, float], multi_family_ratio: float = 0.7) -> list[PlanCandidate]:
         candidates: list[PlanCandidate] = []
         for family, score in family_scores.items():
             if score < 0:
@@ -574,6 +590,7 @@ class APGPlanner:
             steps = self.pattern_library.get_program_steps(family, node.kind)
             if not steps:
                 continue
+            steps = _inject_challenge_params(steps, record.snapshot.challenge, record.snapshot.instance)
             candidates.append(
                 PlanCandidate(
                     family=family,
@@ -583,7 +600,53 @@ class APGPlanner:
                     score=score,
                 )
             )
+        # Add multi-family composition candidates
+        multi_candidates = self._compose_multi_family_candidates(record, family_scores, multi_family_ratio)
+        candidates.extend(multi_candidates)
         return candidates
+
+    def _compose_multi_family_candidates(self, record, family_scores: dict[str, float], score_ratio: float = 0.7) -> list[PlanCandidate]:
+        """Compose candidates that fuse steps from 2 families when their scores are close enough."""
+        eligible = [(f, s) for f, s in family_scores.items() if s > 0]
+        if len(eligible) < 2:
+            return []
+        # Sort by score descending
+        eligible.sort(key=lambda item: item[1], reverse=True)
+        primary_family, primary_score = eligible[0]
+        compositions: list[PlanCandidate] = []
+        for secondary_family, secondary_score in eligible[1:]:
+            # Secondary must have score >= score_ratio * primary to be worth composing
+            if secondary_score < score_ratio * primary_score:
+                continue
+            # Both families must have an available next node
+            primary_node = self._next_node(record.pattern_graph, primary_family)
+            secondary_node = self._next_node(record.pattern_graph, secondary_family)
+            if primary_node is None or secondary_node is None:
+                continue
+            # Get steps: observation phase from primary, action phase from secondary, verification from primary
+            primary_obs_steps = self.pattern_library.get_program_steps(primary_family, PatternNodeKind.OBSERVATION_GATE)
+            secondary_act_steps = self.pattern_library.get_program_steps(secondary_family, PatternNodeKind.ACTION_TEMPLATE)
+            primary_verify_steps = self.pattern_library.get_program_steps(primary_family, PatternNodeKind.VERIFICATION_GATE)
+            if not primary_obs_steps and not secondary_act_steps:
+                continue
+            merged_steps: list[PrimitiveActionStep] = []
+            merged_steps.extend(primary_obs_steps)
+            merged_steps.extend(secondary_act_steps)
+            if primary_verify_steps:
+                merged_steps.extend(primary_verify_steps)
+            merged_steps = _inject_challenge_params(merged_steps, record.snapshot.challenge, record.snapshot.instance)
+            composite_score = primary_score + secondary_score * 0.5
+            compositions.append(
+                PlanCandidate(
+                    family=primary_family,
+                    node_id=primary_node.id,
+                    node_kind=primary_node.kind.value,
+                    steps=merged_steps,
+                    score=composite_score,
+                    secondary_families=[secondary_family],
+                )
+            )
+        return compositions
 
     def _next_node(self, graph: PatternGraph, family: str) -> PatternNode | None:
         for suffix in ("observe", "act", "verify", "fallback"):
@@ -591,6 +654,33 @@ class APGPlanner:
             if node is not None and node.status in {"pending", "active"}:
                 return node
         return None
+
+
+def _inject_challenge_params(
+    steps: list[PrimitiveActionStep],
+    challenge: ChallengeDefinition,
+    instance: ChallengeInstance | None = None,
+) -> list[PrimitiveActionStep]:
+    """Inject challenge-specific parameters into FAMILY_PROGRAMS template steps."""
+    target = instance.target if instance else challenge.target
+    injected = []
+    for step in steps:
+        params = dict(step.parameters)
+        if step.primitive == "http-request":
+            params.setdefault("url", target)
+        elif step.primitive == "browser-inspect":
+            params.setdefault("url", target)
+        elif step.primitive == "session-materialize":
+            params.setdefault("login_url", target)
+        elif step.primitive in ("artifact-scan", "binary-inspect"):
+            if target.startswith(("http://", "https://", "ftp://")):
+                params.setdefault("url", target)
+        injected.append(PrimitiveActionStep(
+            primitive=step.primitive,
+            instruction=step.instruction,
+            parameters=params,
+        ))
+    return injected
 
 
 def build_episode_entry(record, program: ActionProgram, outcome: ActionOutcome, summarizer: ObservationSummarizer | None = None) -> EpisodeEntry:

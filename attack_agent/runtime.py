@@ -314,7 +314,10 @@ def _resolve_http_request_specs(step: PrimitiveActionStep, bundle: TaskBundle) -
             if "method" not in spec:
                 spec["method"] = "GET"
             return [spec]
-        return []
+        # Fallback: use bundle.target as URL
+        spec = {"url": bundle.target, "method": "GET"}
+        spec.update(param_overrides)
+        return [spec]
     required_tags = list(step.parameters.get("required_tags", []))
     if isinstance(raw_config, list):
         candidates = [item for item in raw_config if isinstance(item, dict)]
@@ -368,7 +371,10 @@ def _resolve_browser_inspect_specs(step: PrimitiveActionStep, bundle: TaskBundle
             if "url" not in spec and "path" not in spec:
                 spec["path"] = "/"
             return [spec]
-        return []
+        # Fallback: use bundle.target as URL
+        spec = {"url": bundle.target}
+        spec.update(param_overrides)
+        return [spec]
     required_tags = list(step.parameters.get("required_tags", []))
     if isinstance(raw_config, list):
         candidates = [item for item in raw_config if isinstance(item, dict)]
@@ -1122,7 +1128,10 @@ def _resolve_session_materialize_specs(step: PrimitiveActionStep, bundle: TaskBu
             if "method" not in spec:
                 spec["method"] = "POST"
             return [spec]
-        return []
+        # Fallback: use bundle.target as login_url
+        spec = {"login_url": bundle.target, "method": "POST"}
+        spec.update(param_overrides)
+        return [spec]
     if isinstance(raw_config, dict):
         if raw_config.get("enabled", True) is False:
             return []

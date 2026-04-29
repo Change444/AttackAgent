@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from .apg import FAMILY_KEYWORDS, FAMILY_PROGRAMS, FAMILY_PROFILES, EpisodeMemory
+from .apg import FAMILY_KEYWORDS, FAMILY_PROGRAMS, FAMILY_PROFILES, EpisodeMemory, _inject_challenge_params
 from .constraint_aware_reasoner import ConstraintContextBuilder, PRIMITIVE_DESCRIPTIONS
 from .constraints import LightweightSecurityShell
 from .dynamic_pattern_composer import DynamicPatternComposer
@@ -43,7 +43,7 @@ class HeuristicFreeExplorationPlanner:
         self._summarizer = summarizer or ObservationSummarizer()
 
     def generate_constrained_plan(self, context: PlanningContext) -> ActionProgram | None:
-        """生成启发式自由探索计划"""
+        """生成启发式自由探索计划，支持多族融合"""
         record = context.record
         challenge = record.snapshot.challenge
 
@@ -72,11 +72,21 @@ class HeuristicFreeExplorationPlanner:
         # 4. Select best family; if no match, return None
         if not family_scores:
             return None
-        best_family = max(family_scores, key=lambda f: family_scores[f])
+        sorted_families = sorted(family_scores, key=lambda f: family_scores[f], reverse=True)
+        best_family = sorted_families[0]
         if family_scores[best_family] <= 1:
             return None
 
-        # 5. Assemble steps from FAMILY_PROGRAMS
+        # 5. Try multi-family composition if second family is close enough
+        secondary_family: str | None = None
+        multi_family_ratio = 0.7
+        if len(sorted_families) >= 2:
+            second_family = sorted_families[1]
+            second_score = family_scores[second_family]
+            if second_score >= multi_family_ratio * family_scores[best_family]:
+                secondary_family = second_family
+
+        # 6. Assemble steps from FAMILY_PROGRAMS
         steps: list[PrimitiveActionStep] = []
         phases = [
             PatternNodeKind.OBSERVATION_GATE,
@@ -86,9 +96,18 @@ class HeuristicFreeExplorationPlanner:
         family_programs = FAMILY_PROGRAMS.get(best_family, {})
         for phase in phases:
             phase_steps = family_programs.get(phase, [])
+            # For multi-family: use secondary family's action template instead of primary's
+            if phase == PatternNodeKind.ACTION_TEMPLATE and secondary_family is not None:
+                secondary_programs = FAMILY_PROGRAMS.get(secondary_family, {})
+                secondary_act_steps = secondary_programs.get(PatternNodeKind.ACTION_TEMPLATE, [])
+                if secondary_act_steps:
+                    phase_steps = secondary_act_steps
             steps.extend(phase_steps)
 
-        # 6. Try to enrich with discovered patterns
+        # 7. Inject challenge-specific parameters into template steps
+        steps = _inject_challenge_params(steps, challenge, record.snapshot.instance)
+
+        # 8. Try to enrich with discovered patterns
         pattern_context = {"primitives": [s.primitive for s in steps]}
         discovered = self.pattern_composer.retrieve_patterns(pattern_context)
         for pattern in discovered[:1]:
@@ -99,7 +118,7 @@ class HeuristicFreeExplorationPlanner:
                 if applied_step.primitive not in existing_primitives:
                     steps.append(applied_step)
 
-        # 7. Ensure observation-first if required
+        # 9. Ensure observation-first if required
         if constraints.observation_before_action:
             obs_steps = [s for s in steps if s.primitive in {
                 "http-request", "browser-inspect", "artifact-scan", "binary-inspect",
@@ -108,21 +127,27 @@ class HeuristicFreeExplorationPlanner:
             if obs_steps and action_steps and steps[0] not in obs_steps:
                 steps = obs_steps + action_steps
 
-        # 8. Trim to max_steps
+        # 10. Trim to max_steps
         steps = steps[:max_steps]
 
         if not steps:
             return None
 
-        # 9. Build rationale
+        # 11. Build rationale
         rationale = f"启发式自由探索: 基于 {best_family} 族模板生成，关键词匹配得分={family_scores[best_family]}"
+        if secondary_family:
+            rationale += f"，融合 {secondary_family} 族操作步骤(得分={family_scores[secondary_family]})"
         if discovered:
             rationale += f"，辅助模式={discovered[0].name}"
 
+        pattern_nodes = [f"{best_family}:observe", f"{best_family}:act", f"{best_family}:verify"]
+        if secondary_family:
+            pattern_nodes.extend([f"{secondary_family}:act"])
+
         return ActionProgram(
             id=f"plan-heuristic-free-{new_id('plan')}",
-            goal=f"启发式探索: {challenge.name}",
-            pattern_nodes=[f"{best_family}:observe", f"{best_family}:act", f"{best_family}:verify"],
+            goal=f"启发式探索: {challenge.name}" + (f" (融合 {secondary_family})" if secondary_family else ""),
+            pattern_nodes=pattern_nodes,
             steps=steps,
             allowed_primitives=list(PRIMITIVE_DESCRIPTIONS.keys()),
             verification_rules=[f"flag匹配: {challenge.flag_pattern}"],

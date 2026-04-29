@@ -9,6 +9,8 @@
 
 | 版本 | 日期 | 变更说明 |
 |------|------|----------|
+| 3.16 | 2026-04-29 | Phase 3 R11+R12 switch_path 真实逻辑 + 多族组合：EnhancedAPGPlanner.switch_path() 实现 STRUCTURED→FREE_EXPLORATION(停滞≥3时自动切换) + FREE_EXPLORATION→STRUCTURED(预算耗尽或置信度≥0.7时回切) + 停滞计数器(_stagnation_counters) + record_outcome() + PATH_SELECTION 事件记录 + stagnation reset，_compose_multi_family_candidates() 融合 2 族步骤(观察阶段用主族 + 操作阶段用副族 + 验证阶段用主族，副族得分≥0.7×主族得分时组合) + PlanCandidate.secondary_families + ProgramDecision.secondary_families + ActionProgram 融合描述/rationale + HeuristicFreeExplorationPlanner 多族融合 + DualPathConfig.path_switch_stagnation_threshold + DualPathConfig.multi_family_score_ratio + StrategyLayer.update_after_outcome 调用 record_outcome，12 项新测试(6 项 R11 + 6 项 R12)，330 测试通过 |
+| 3.15 | 2026-04-29 | Phase 3 R10 步骤参数注入：_inject_challenge_params() 在规划阶段注入 target URL 到 http-request(url)/browser-inspect(url)/session-materialize(login_url)/artifact-scan(url)/binary-inspect(url) 步骤模板(setdefault 不覆盖已有参数)，runtime _resolve_http_request_specs/_resolve_browser_inspect_specs/_resolve_session_materialize_specs 增加 bundle.target 回退(metadata+param_overrides 均空时)，APGPlanner._plan_candidates() + HeuristicFreeExplorationPlanner 调用注入，8 项注入单元测试 + 1 项 APG 集成测试 + 1 项启发式集成测试 + 3 项 runtime 回退测试，318 测试通过 |
 | 3.14 | 2026-04-29 | Phase 3 R9 扩展族关键词 6→14：新增 ssrf-server-boundary(ssrf/internal/proxy/metadata/9关键词) + ssti-template-boundary(ssti/jinja/mako/twig/10关键词) + csrf-state-boundary(csrf/cross-site/forgery/referer/8关键词) + idor-access-boundary(idor/insecure/privilege/uuid/10关键词) + crypto-math-boundary(rsa/aes/ecb/cbc/padding/oracle/16关键词) + pwn-memory-boundary(pwn/overflow/rop/gadget/13关键词) + protocol-logic-boundary(protocol/tcp/dns/mqtt/serialization/14关键词) + race-condition-boundary(race/concurrent/toctou/11关键词)，FAMILY_PROFILES + FAMILY_PROGRAMS 各 8 族 4 节点完整步骤，8 项族匹配测试 + 2 项启发式测试 + 14 族完整性 + 关键词重叠检查，305 测试通过 |
 | 3.13 | 2026-04-29 | Phase 2 R8 code-sandbox 放宽：_SafeAstValidator 移除 ClassDef/With/Raise 禁止(添加 visit_ClassDef 跟踪类名), SAFE_IMPORTS 加入 zlib/csv(9→11), SAFE_BUILTINS 加入 __build_class__, globals_scope 加入 __name__, ConstraintAwareReasoner 更新 code-sandbox 描述, 测试新增 class/with/raise/zlib/csv 5 项, 297 测试通过 |
 | 3.12 | 2026-04-29 | Phase 2 R7 artifact-scan 提取 ZIP/tar 内容 + 增大预览：_extract_archive_members 添加 content_preview(ZIP/tar 成员文本内容) + content_type(_guess_content_type 扩展名映射), _extract_text_preview 上限 128→4096 默认 64→512, _perform_artifact_scan 返回 (payload, temp_dir) 元组延迟清理, _execute_artifact_scan 批量清理 temp_dirs, Observation payload 新增 content_type 字段, PrimitiveRegistry + ConstraintAwareReasoner 新增 max_depth/max_members 参数, 292 测试全通过 |
@@ -49,6 +51,9 @@
 | M14 | Phase 2 R7 artifact-scan ZIP/tar 内容提取 + 增大预览 | 2026-04-29 |
 | M15 | Phase 2 R8 code-sandbox 放宽 class/with/raise + zlib/csv | 2026-04-29 |
 | M16 | Phase 3 R9 扩展族关键词 6→14 | 2026-04-29 |
+| M17 | Phase 3 R10 步骤参数注入 | 2026-04-29 |
+| M18 | Phase 3 R11 switch_path 真实逻辑 | 2026-04-29 |
+| M19 | Phase 3 R12 多族组合 | 2026-04-29 |
 
 ---
 
@@ -75,6 +80,9 @@
 | P1 | artifact-scan 提取 ZIP/tar 内容 + 保留临时文件 + 增大预览（content_preview + content_type + 预览 512→4096） | 0.5 天 | 2026-04-29 |
 | P1 | code-sandbox 放宽（class/with/raise 允许 + zlib/csv 导入） | 0.5 天 | 2026-04-29 |
 | P2 | 扩展族关键词 6→14（+SSRF/SSTI/CSRF/IDOR/RSA/pwn/协议/竞态） | 1 天 | 2026-04-29 |
+| P2 | 步骤参数注入（_inject_challenge_params + bundle.target 回退） | 1 天 | 2026-04-29 |
+| P2 | switch_path 真实逻辑（STRUCTURED→FREE_EXPLORATION 停滞切换 + FREE_EXPLORATION→STRUCTURED 回切 + stagnation counter + PATH_SELECTION 事件） | 0.5 天 | 2026-04-29 |
+| P2 | 多族组合（_compose_multi_family_candidates 融合 2 族步骤 + PlanCandidate.secondary_families + HeuristicFree 多族融合） | 0.5 天 | 2026-04-29 |
 
 ---
 
@@ -99,6 +107,9 @@
 | artifact-scan 不提取 ZIP/tar 内容（仅列文件名），预览仅 64 字节，下载后立即清理临时文件 | v3.12 | _extract_archive_members 添加 content_preview(ZIP/tar 成员文本预览) + content_type(_guess_content_type 扩展名→MIME 映射), _extract_text_preview 上限 128→4096 默认 64→512, _perform_artifact_scan 返回 (payload, temp_dir) 元组延迟清理, Observation payload 新增 content_type 字段 |
 | code-sandbox 禁止 class/with/raise，缺少 zlib/csv 解码库 | v3.13 | _SafeAstValidator 移除 ClassDef/With/Raise 禁止 + visit_ClassDef 跟踪类名, SAFE_IMPORTS 加入 zlib/csv, SAFE_BUILTINS 加入 __build_class__, globals_scope 加入 __name__, class/with/raise 可用 |
 | 6 个族关键词过浅，缺少 SSRF/SSTI/CSRF/IDOR/RSA/pwn/协议分析等族 | v3.14 | FAMILY_KEYWORDS 6→14，新增 ssrf-server/ssti-template/csrf-state/idor-access/crypto-math/pwn-memory/protocol-logic/race-condition 8 族，FAMILY_PROFILES + FAMILY_PROGRAMS 4 节点完整步骤，族关键词覆盖常见 CTF 类别(web/crypto/pwn/forensics/protocol) |
+| FAMILY_PROGRAMS 步骤不含挑战特定 URL/路径参数 | v3.15 | _inject_challenge_params() 在规划阶段注入 challenge.target→url/login_url 到模板步骤(setdefault 不覆盖)，runtime _resolve_*_specs() 增加 bundle.target 回退(metadata+param_overrides 均空时) |
+| switch_path() 是空 stub | v3.16 | EnhancedAPGPlanner.switch_path() 实现 STRUCTURED→FREE_EXPLORATION(停滞≥3自动切换) + FREE_EXPLORATION→STRUCTURED(预算耗尽或置信度≥0.7回切) + _stagnation_counters + record_outcome() + PATH_SELECTION 事件 + stagnation reset |
+| 无多族组合攻击链 | v3.16 | _compose_multi_family_candidates() 融合 2 族步骤(观察→主族 + 操作→副族 + 验证→主族，副族得分≥0.7×主族)，PlanCandidate.secondary_families + ProgramDecision.secondary_families + HeuristicFree 多族融合 + DualPathConfig.multi_family_score_ratio |
 
 ---
 
@@ -132,12 +143,12 @@
 | # | 问题 | 影响范围 | 严重度 |
 |---|------|----------|--------|
 | S1 | ~~6 个族关键词过浅，缺少 SSRF/SSTI/CSRF/IDOR/RSA/pwn/协议分析等族~~ → 已解决 | ~~多数 CTF 类别无匹配，无匹配时返回 None~~ → v3.14 族关键词 6→14，覆盖 SSRF/SSTI/CSRF/IDOR/crypto/pwn/协议/竞态 8 族，FAMILY_PROGRAMS 4 节点完整步骤 | ~~致命~~ → 已解决 |
-| S2 | FAMILY_PROGRAMS 步骤不含挑战特定参数（URL/路径/payload） | 步骤是空模板，无法执行具体操作 | 高 |
+| S2 | ~~FAMILY_PROGRAMS 步骤不含挑战特定参数（URL/路径/payload）~~ → 部分解决 | ~~步骤是空模板，无法执行具体操作~~ → v3.15 _inject_challenge_params() 填充 url/login_url，runtime 回退 bundle.target；parse_source/program_fragment/diff-compare 仍需 metadata 或 LLM 提供 | ~~高~~ → 降为中 |
 | S3 | ~~停滞阈值 3 次连续失败就放弃~~ → 已解决 | 真实解题通常需 10+ 次迭代 → v3.6 stagnation_threshold→8 可配置 | ~~高~~ → 已解决 |
 | S4 | max_cycles 默认 12 次 | 远不够真实解题所需 | 高 |
-| S5 | switch_path() 是空 stub | 文档声称有路径切换功能，实际不存在 | 高 |
+| S5 | ~~switch_path() 是空 stub~~ → 已解决 | ~~文档声称有路径切换功能，实际不存在~~ → v3.16 switch_path() 实现 STRUCTURED→FREE_EXPLORATION(停滞≥3自动切换) + FREE_EXPLORATION→STRUCTURED(预算耗尽或置信度≥0.7回切) + stagnation counter + PATH_SELECTION 事件 | ~~高~~ → 已解决 |
 | S6 | ~~flag 提交置信度阈值 0.85 过高~~ → 已解决 | 可能拒绝正确 flag → v3.6 flag_confidence_threshold→0.6 可配置 | ~~中~~ → 已解决 |
-| S7 | 无多族组合攻击链 | 只选最高得分族，无法组合跨族策略 | 中 |
+| S7 | ~~无多族组合攻击链~~ → 已解决 | ~~只选最高得分族，无法组合跨族策略~~ → v3.16 _compose_multi_family_candidates() 融合 2 族步骤(观察→主族 + 操作→副族 + 验证→主族，副族得分≥0.7×主族得分) + PlanCandidate.secondary_families | ~~中~~ → 已解决 |
 | S8 | catch-22：DynamicPatternComposer 需要 3+ 成功案例，但 3 水失败就放弃 | 模式发现闭环无法闭合 | 中 |
 
 #### 架构结构性问题
@@ -205,16 +216,16 @@
 
 **Phase 2 目标**：原语覆盖 70%+ 常见 web/encoding/forensics 类 CTF 题。
 
-#### Phase 3：规划策略增强（P2，约 3 天）
+#### Phase 3：规划策略增强（P2，已完成 ✅）
 
-| # | 任务 | 工作量 | 交付物 |
-|---|------|--------|--------|
+| # | 任务 | 工作量 | 交付物 | 完成日期 |
+|---|------|--------|--------|----------|
 | R9 | 扩展 FAMILY_KEYWORDS：+SSRF/SSTI/CSRF/IDOR/RSA/pwn/协议等 8 族 | 1 天 | 14 族关键词 + FAMILY_PROGRAMS + 测试 | 2026-04-29 |
-| R10 | 步骤参数注入：挑战 target/endpoint/credential 注入步骤模板 | 1 天 | 动态参数填充 + 测试 |
-| R11 | 实现 switch_path() 真实逻辑 | 0.5 天 | 路径切换 + 测试 |
-| R12 | 多族组合：允许 plan 融合 2 个族的步骤 | 0.5 天 | 组合策略 + 测试 |
+| R10 | 步骤参数注入：挑战 target/endpoint/credential 注入步骤模板 | 1 天 | 动态参数填充 + 测试 | 2026-04-29 |
+| R11 | 实现 switch_path() 真实逻辑 | 0.5 天 | 路径切换 + 测试 | 2026-04-29 |
+| R12 | 多族组合：允许 plan 融合 2 个族的步骤 | 0.5 天 | 组合策略 + 测试 | 2026-04-29 |
 
-**Phase 3 目标**：规划覆盖主流 CTF 类别，步骤不再只是空模板。
+**Phase 3 目标已达成**：规划覆盖主流 CTF 类别，步骤不再只是空模板，路径可自动切换，多族组合增强策略覆盖。
 
 #### Phase 4：架构清理（P3，约 2 天）
 

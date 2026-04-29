@@ -13,6 +13,7 @@ class PlanCandidate:
     node_kind: str
     steps: list[PrimitiveActionStep]
     score: float
+    secondary_families: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -38,6 +39,7 @@ class ProgramDecision:
     steps: list[PrimitiveActionStep]
     rationale: str
     source: str
+    secondary_families: list[str] = field(default_factory=list)
 
 
 class ReasoningModel(Protocol):
@@ -172,6 +174,7 @@ class LLMReasoner(HeuristicReasoner):
             steps=steps,
             rationale=rationale,
             source="llm",
+            secondary_families=candidate.secondary_families,
         )
         return None
 

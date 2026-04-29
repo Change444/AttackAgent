@@ -11,6 +11,7 @@ from .path_selection import PathSelectionStrategy, PathSelectionFactors
 from .platform_models import (
     ActionProgram,
     DualPathConfig,
+    Event,
     EventType,
     FreeExplorationPlanner,
     PathType,
@@ -40,6 +41,8 @@ class EnhancedAPGPlanner:
         self.config = config or DualPathConfig()
         self._path_strategy = PathSelectionStrategy(self.config)
         self._exploration_attempts: dict[str, int] = {}
+        self._current_paths: dict[str, PathType] = {}
+        self._stagnation_counters: dict[str, int] = {}
 
     @property
     def reasoner(self):
@@ -48,8 +51,23 @@ class EnhancedAPGPlanner:
 
     def plan(self, record) -> tuple[ActionProgram | None, list[RetrievalHit]]:
         """双路径规划"""
-        context = self._build_planning_context(record)
+        project_id = record.snapshot.project_id
+        current_path = self._current_paths.get(project_id, PathType.STRUCTURED)
+        context = self._build_planning_context(record, current_path)
+
+        # Auto-switch if stagnation threshold reached on current path
+        stagnation = self._stagnation_counters.get(project_id, 0)
+        if stagnation >= self.config.path_switch_stagnation_threshold and current_path != PathType.FREE_EXPLORATION:
+            switched = self.switch_path(record, reason="structured_path_stagnation")
+            if switched:
+                current_path = PathType.FREE_EXPLORATION
+                context = self._build_planning_context(record, current_path)
+
         path_type = self.select_path(context)
+        # Honor explicit switch_path overrides; otherwise use strategy result
+        if current_path == PathType.FREE_EXPLORATION and stagnation >= self.config.path_switch_stagnation_threshold:
+            path_type = PathType.FREE_EXPLORATION
+        self._current_paths[project_id] = path_type
         self._record_path_selection(record, path_type, context)
 
         program: ActionProgram | None = None
@@ -59,12 +77,10 @@ class EnhancedAPGPlanner:
             program, hits = self._plan_structured(record, context)
         elif path_type == PathType.FREE_EXPLORATION:
             program, hits = self._plan_free_exploration(record, context)
-            project_id = record.snapshot.project_id
             self._exploration_attempts[project_id] = self._exploration_attempts.get(project_id, 0) + 1
         else:  # HYBRID
             program, hits = self._plan_hybrid(record, context)
-            if program is not None and program.planner_source == "free_exploration":
-                project_id = record.snapshot.project_id
+            if program is not None and program.planner_source.startswith("free_exploration"):
                 self._exploration_attempts[project_id] = self._exploration_attempts.get(project_id, 0) + 1
 
         return program, hits
@@ -73,12 +89,52 @@ class EnhancedAPGPlanner:
         """选择规划路径"""
         return self._path_strategy.select_path(context)
 
-    def switch_path(self, record, reason: str) -> None:
-        """切换规划路径"""
+    def switch_path(self, record, reason: str) -> bool:
+        """切换规划路径 — 从结构化切换到自由探索，或从自由探索回到结构化"""
         project_id = record.snapshot.project_id
-        current = self._exploration_attempts.get(project_id, 0)
-        if current >= self.config.max_exploration_attempts:
-            return
+        current_path = self._current_paths.get(project_id, PathType.STRUCTURED)
+        exploration_count = self._exploration_attempts.get(project_id, 0)
+
+        new_path: PathType | None = None
+
+        if current_path == PathType.STRUCTURED:
+            # Switch to free exploration if budget remains
+            budget = self.config.exploration_budget_per_project - exploration_count
+            if budget > 0:
+                new_path = PathType.FREE_EXPLORATION
+        elif current_path == PathType.FREE_EXPLORATION:
+            # Switch back to structured if exploration budget exhausted or exploration found good pattern
+            if exploration_count >= self.config.max_exploration_attempts:
+                new_path = PathType.STRUCTURED
+            # Also switch back if pattern confidence is now high (exploration paid off)
+            context = self._build_planning_context(record, current_path)
+            if context.pattern_confidence >= 0.7:
+                new_path = PathType.STRUCTURED
+
+        if new_path is None:
+            return False
+
+        self._current_paths[project_id] = new_path
+        # Reset stagnation counter on switch to give new path a fresh chance
+        self._stagnation_counters[project_id] = 0
+
+        # Record path switch event
+        if record.run_journal is not None:
+            event = Event(
+                type=EventType.PATH_SELECTION,
+                project_id=project_id,
+                run_id="path-switch",
+                payload={
+                    "path_type": new_path.value,
+                    "previous_path": current_path.value,
+                    "reason": reason,
+                    "exploration_attempts": exploration_count,
+                },
+                source="enhanced_apg_switch",
+            )
+            record.run_journal.append(event)
+
+        return True
 
     def create_graph(self, project: ProjectSnapshot) -> PatternGraph:
         """创建模式图（委托给结构化规划器）"""
@@ -88,7 +144,16 @@ class EnhancedAPGPlanner:
         """更新模式图（委托给结构化规划器）"""
         self.structured_planner.update_graph(record, program, outcome)
 
-    def _build_planning_context(self, record) -> PlanningContext:
+    def record_outcome(self, record, program: ActionProgram, outcome) -> None:
+        """记录执行结果，更新停滞计数器用于路径切换"""
+        project_id = record.snapshot.project_id
+        stagnation = self._stagnation_counters.get(project_id, 0)
+        if outcome.status == "ok" and (outcome.novelty > 0.0 or outcome.candidate_flags):
+            self._stagnation_counters[project_id] = 0
+        else:
+            self._stagnation_counters[project_id] = stagnation + 1
+
+    def _build_planning_context(self, record, current_path: PathType = PathType.STRUCTURED) -> PlanningContext:
         """构建规划上下文"""
         project_id = record.snapshot.project_id
         attempt_count = self._exploration_attempts.get(project_id, 0)
@@ -122,7 +187,7 @@ class EnhancedAPGPlanner:
             complexity_score=complexity,
             pattern_confidence=pattern_confidence,
             exploration_budget=budget,
-            current_path=PathType.STRUCTURED,
+            current_path=current_path,
         )
 
     def _compute_complexity(self, record) -> float:

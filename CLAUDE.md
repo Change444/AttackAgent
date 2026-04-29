@@ -81,13 +81,15 @@ platform.solve_all()
 - model=None → APGPlanner + HeuristicFreeExplorationPlanner（纯规则双路径）
 - model=xxx → APGPlanner + ConstraintAwareReasoner（LLM 双路径）
 - PathSelectionStrategy 动态选择；ObservationSummarizer 共享注入观测内容
+- switch_path() 自动切换：STRUCTURED→FREE_EXPLORATION（停滞≥3次时）+ FREE_EXPLORATION→STRUCTURED（预算耗尽或置信度≥0.7时回切）
+- 多族组合：_compose_multi_family_candidates() 融合 2 族步骤（观察→主族 + 操作→副族 + 验证→主族，副族得分≥0.7×主族得分时组合）
 
 ## Known Limitations (摘要)
 
 当前系统**解题率约 25-30%**（已可连接真实 CTFd 靶场）。关键差距：
 - browser-inspect 不执行 JS、session-materialize 无多步认证 → web 题 70% 不能解
 - code-sandbox 仍禁止 lambda + 无 crypto 库 → 高级密码题不能解（class/with/raise + zlib/csv 已放开）
-- 步骤空模板 → 规划策略僵硬（14 族关键词已覆盖主流 CTF 类别）
+- parse_source/program_fragment 仍需 metadata 或 LLM 提供（14 族关键词已覆盖主流 CTF 类别；URL/login_url 注入已实现；多族组合已实现；路径自动切换已实现）
 
 **完整问题清单 + 四阶段解决计划**：见 [docs/CHANGELOG.md](docs/CHANGELOG.md) "Current Limitations & Roadmap" 章节
 
