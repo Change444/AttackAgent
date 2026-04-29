@@ -32,6 +32,14 @@ FAMILY_KEYWORDS = {
     "file-archive-forensics": ("zip", "archive", "file", "upload", "extract", "pcap", "image", "stego", "forensics"),
     "encoding-transform": ("base64", "decode", "encode", "cipher", "hash", "xor", "hex", "transform"),
     "binary-string-extraction": ("binary", "strings", "elf", "byte", "reverse", "symbol", "assembly", "pe"),
+    "ssrf-server-boundary": ("ssrf", "internal", "proxy", "fetch", "redirect", "cloud", "metadata", "localhost", "whitelist"),
+    "ssti-template-boundary": ("ssti", "jinja", "mako", "twig", "handlebars", "mustache", "expression", "erb", "dust", "nunjucks"),
+    "csrf-state-boundary": ("csrf", "cross-site", "forgery", "referer", "origin", "same-site", "double-submit", "synchronizer"),
+    "idor-access-boundary": ("idor", "insecure", "direct", "object", "reference", "privilege", "escalation", "bypass", "uuid", "sequential"),
+    "crypto-math-boundary": ("rsa", "aes", "ecb", "cbc", "padding", "oracle", "modular", "exponent", "ciphertext", "plaintext", "crypto", "diffie", "elliptic", "discrete", "lattice"),
+    "pwn-memory-boundary": ("pwn", "overflow", "buffer", "shellcode", "rop", "gadget", "heap", "stack", "libc", "aslr", "canary", "nx", "seccomp"),
+    "protocol-logic-boundary": ("protocol", "tcp", "udp", "irc", "ftp", "smtp", "dns", "mqtt", "modbus", "packet", "frame", "serialization", "protobuf", "deserialization"),
+    "race-condition-boundary": ("race", "concurrent", "timing", "mutex", "lock", "thread", "parallel", "atomic", "toctou", "collision", "interleaving"),
 }
 
 
@@ -42,6 +50,14 @@ FAMILY_PROFILES = {
     "file-archive-forensics": WorkerProfile.ARTIFACT,
     "encoding-transform": WorkerProfile.SOLVER,
     "binary-string-extraction": WorkerProfile.BINARY,
+    "ssrf-server-boundary": WorkerProfile.NETWORK,
+    "ssti-template-boundary": WorkerProfile.BROWSER,
+    "csrf-state-boundary": WorkerProfile.BROWSER,
+    "idor-access-boundary": WorkerProfile.NETWORK,
+    "crypto-math-boundary": WorkerProfile.SOLVER,
+    "pwn-memory-boundary": WorkerProfile.BINARY,
+    "protocol-logic-boundary": WorkerProfile.NETWORK,
+    "race-condition-boundary": WorkerProfile.HYBRID,
 }
 
 
@@ -142,6 +158,139 @@ FAMILY_PROGRAMS = {
         ],
         PatternNodeKind.FALLBACK: [
             PrimitiveActionStep("structured-parse", "Record binary dead ends and alternate strings", {"required_tags": ["binary-string-extraction", "fallback"]}),
+        ],
+    },
+    "ssrf-server-boundary": {
+        PatternNodeKind.OBSERVATION_GATE: [
+            PrimitiveActionStep("http-request", "Probe target URL parameters and internal endpoints", {"required_tags": ["ssrf-server-boundary", "observation_gate"], "method": "GET"}),
+            PrimitiveActionStep("structured-parse", "Parse URL parameters, redirects, and response patterns", {"required_tags": ["ssrf-server-boundary", "observation_gate"]}),
+        ],
+        PatternNodeKind.ACTION_TEMPLATE: [
+            PrimitiveActionStep("http-request", "Construct internal/metadata URL payloads", {"required_tags": ["ssrf-server-boundary", "action_template"]}),
+            PrimitiveActionStep("code-sandbox", "Generate SSRF URL transformations and encodings", {"required_tags": ["ssrf-server-boundary", "action_template"]}),
+            PrimitiveActionStep("diff-compare", "Compare SSRF response differences across payloads", {"required_tags": ["ssrf-server-boundary", "action_template"]}),
+        ],
+        PatternNodeKind.VERIFICATION_GATE: [
+            PrimitiveActionStep("extract-candidate", "Extract candidate flag from SSRF responses", {"required_tags": ["ssrf-server-boundary", "verification_gate"]}),
+        ],
+        PatternNodeKind.FALLBACK: [
+            PrimitiveActionStep("structured-parse", "Record SSRF dead ends and alternate endpoints", {"required_tags": ["ssrf-server-boundary", "fallback"]}),
+        ],
+    },
+    "ssti-template-boundary": {
+        PatternNodeKind.OBSERVATION_GATE: [
+            PrimitiveActionStep("http-request", "Detect template engine and injection points", {"required_tags": ["ssti-template-boundary", "observation_gate"], "method": "GET"}),
+            PrimitiveActionStep("browser-inspect", "Observe template rendering behavior and error messages", {"required_tags": ["ssti-template-boundary", "observation_gate"]}),
+        ],
+        PatternNodeKind.ACTION_TEMPLATE: [
+            PrimitiveActionStep("http-request", "Send template injection payloads against identified inputs", {"required_tags": ["ssti-template-boundary", "action_template"]}),
+            PrimitiveActionStep("code-sandbox", "Construct template expression payloads for specific engines", {"required_tags": ["ssti-template-boundary", "action_template"]}),
+            PrimitiveActionStep("diff-compare", "Compare responses before and after template injection", {"required_tags": ["ssti-template-boundary", "action_template"]}),
+        ],
+        PatternNodeKind.VERIFICATION_GATE: [
+            PrimitiveActionStep("extract-candidate", "Extract candidate flag from template execution output", {"required_tags": ["ssti-template-boundary", "verification_gate"]}),
+        ],
+        PatternNodeKind.FALLBACK: [
+            PrimitiveActionStep("structured-parse", "Record template injection dead ends and alternate contexts", {"required_tags": ["ssti-template-boundary", "fallback"]}),
+        ],
+    },
+    "csrf-state-boundary": {
+        PatternNodeKind.OBSERVATION_GATE: [
+            PrimitiveActionStep("http-request", "Fetch pages and forms with CSRF protection", {"required_tags": ["csrf-state-boundary", "observation_gate"], "method": "GET"}),
+            PrimitiveActionStep("browser-inspect", "Observe CSRF tokens, cookies, and SameSite headers", {"required_tags": ["csrf-state-boundary", "observation_gate"]}),
+        ],
+        PatternNodeKind.ACTION_TEMPLATE: [
+            PrimitiveActionStep("session-materialize", "Login with CSRF token prefetch and session persistence", {"required_tags": ["csrf-state-boundary", "action_template"]}),
+            PrimitiveActionStep("http-request", "Construct cross-site requests bypassing CSRF validation", {"required_tags": ["csrf-state-boundary", "action_template"]}),
+            PrimitiveActionStep("code-sandbox", "Generate CSRF bypass payloads and token manipulations", {"required_tags": ["csrf-state-boundary", "action_template"]}),
+        ],
+        PatternNodeKind.VERIFICATION_GATE: [
+            PrimitiveActionStep("extract-candidate", "Extract candidate flag from CSRF-protected responses", {"required_tags": ["csrf-state-boundary", "verification_gate"]}),
+        ],
+        PatternNodeKind.FALLBACK: [
+            PrimitiveActionStep("structured-parse", "Record CSRF bypass dead ends and alternate mechanisms", {"required_tags": ["csrf-state-boundary", "fallback"]}),
+        ],
+    },
+    "idor-access-boundary": {
+        PatternNodeKind.OBSERVATION_GATE: [
+            PrimitiveActionStep("http-request", "Probe resource access patterns and ID/UUID formats", {"required_tags": ["idor-access-boundary", "observation_gate"], "method": "GET"}),
+            PrimitiveActionStep("structured-parse", "Parse ID patterns, sequential vs UUID references", {"required_tags": ["idor-access-boundary", "observation_gate"]}),
+        ],
+        PatternNodeKind.ACTION_TEMPLATE: [
+            PrimitiveActionStep("http-request", "Construct IDOR payloads modifying object references", {"required_tags": ["idor-access-boundary", "action_template"]}),
+            PrimitiveActionStep("diff-compare", "Compare privilege differences across identity switches", {"required_tags": ["idor-access-boundary", "action_template"]}),
+            PrimitiveActionStep("session-materialize", "Try alternative identities to access protected resources", {"required_tags": ["idor-access-boundary", "action_template"]}),
+        ],
+        PatternNodeKind.VERIFICATION_GATE: [
+            PrimitiveActionStep("extract-candidate", "Extract candidate flag from privilege-escalated responses", {"required_tags": ["idor-access-boundary", "verification_gate"]}),
+        ],
+        PatternNodeKind.FALLBACK: [
+            PrimitiveActionStep("structured-parse", "Record IDOR dead ends and alternate access paths", {"required_tags": ["idor-access-boundary", "fallback"]}),
+        ],
+    },
+    "crypto-math-boundary": {
+        PatternNodeKind.OBSERVATION_GATE: [
+            PrimitiveActionStep("structured-parse", "Detect crypto parameters, key formats, and algorithm hints", {"required_tags": ["crypto-math-boundary", "observation_gate"]}),
+            PrimitiveActionStep("artifact-scan", "Scan crypto key files, ciphertexts, and parameters", {"required_tags": ["crypto-math-boundary", "observation_gate"]}),
+        ],
+        PatternNodeKind.ACTION_TEMPLATE: [
+            PrimitiveActionStep("code-sandbox", "Perform crypto math operations (RSA/AES/padding computations)", {"required_tags": ["crypto-math-boundary", "action_template"]}),
+            PrimitiveActionStep("diff-compare", "Compare encryption/decryption results and plaintext candidates", {"required_tags": ["crypto-math-boundary", "action_template"]}),
+        ],
+        PatternNodeKind.VERIFICATION_GATE: [
+            PrimitiveActionStep("extract-candidate", "Extract candidate flag from decrypted or computed output", {"required_tags": ["crypto-math-boundary", "verification_gate"]}),
+        ],
+        PatternNodeKind.FALLBACK: [
+            PrimitiveActionStep("structured-parse", "Record crypto dead ends and alternate algorithm paths", {"required_tags": ["crypto-math-boundary", "fallback"]}),
+        ],
+    },
+    "pwn-memory-boundary": {
+        PatternNodeKind.OBSERVATION_GATE: [
+            PrimitiveActionStep("binary-inspect", "Inspect ELF binary protections (NX, ASLR, canary) and symbols", {"required_tags": ["pwn-memory-boundary", "observation_gate"]}),
+            PrimitiveActionStep("structured-parse", "Parse binary addresses, GOT entries, and function offsets", {"required_tags": ["pwn-memory-boundary", "observation_gate"]}),
+        ],
+        PatternNodeKind.ACTION_TEMPLATE: [
+            PrimitiveActionStep("code-sandbox", "Construct exploit payloads (buffer overflow, ROP chain assembly)", {"required_tags": ["pwn-memory-boundary", "action_template"]}),
+            PrimitiveActionStep("binary-inspect", "Deep dive into vulnerability details and memory layout", {"required_tags": ["pwn-memory-boundary", "action_template"]}),
+        ],
+        PatternNodeKind.VERIFICATION_GATE: [
+            PrimitiveActionStep("extract-candidate", "Extract candidate flag from exploit output", {"required_tags": ["pwn-memory-boundary", "verification_gate"]}),
+        ],
+        PatternNodeKind.FALLBACK: [
+            PrimitiveActionStep("structured-parse", "Record pwn dead ends and alternate exploitation paths", {"required_tags": ["pwn-memory-boundary", "fallback"]}),
+        ],
+    },
+    "protocol-logic-boundary": {
+        PatternNodeKind.OBSERVATION_GATE: [
+            PrimitiveActionStep("http-request", "Probe protocol ports and service behaviors", {"required_tags": ["protocol-logic-boundary", "observation_gate"]}),
+            PrimitiveActionStep("artifact-scan", "Scan pcap files, protocol captures, and serialized data", {"required_tags": ["protocol-logic-boundary", "observation_gate"]}),
+        ],
+        PatternNodeKind.ACTION_TEMPLATE: [
+            PrimitiveActionStep("code-sandbox", "Parse and reconstruct protocol frames and packets", {"required_tags": ["protocol-logic-boundary", "action_template"]}),
+            PrimitiveActionStep("http-request", "Send crafted protocol requests and deserialization payloads", {"required_tags": ["protocol-logic-boundary", "action_template"]}),
+        ],
+        PatternNodeKind.VERIFICATION_GATE: [
+            PrimitiveActionStep("extract-candidate", "Extract candidate flag from protocol analysis output", {"required_tags": ["protocol-logic-boundary", "verification_gate"]}),
+        ],
+        PatternNodeKind.FALLBACK: [
+            PrimitiveActionStep("structured-parse", "Record protocol dead ends and alternate service paths", {"required_tags": ["protocol-logic-boundary", "fallback"]}),
+        ],
+    },
+    "race-condition-boundary": {
+        PatternNodeKind.OBSERVATION_GATE: [
+            PrimitiveActionStep("http-request", "Probe concurrent access endpoints and timing-sensitive APIs", {"required_tags": ["race-condition-boundary", "observation_gate"], "method": "GET"}),
+            PrimitiveActionStep("structured-parse", "Analyze request timing patterns and mutex behaviors", {"required_tags": ["race-condition-boundary", "observation_gate"]}),
+        ],
+        PatternNodeKind.ACTION_TEMPLATE: [
+            PrimitiveActionStep("http-request", "Send concurrent race-condition requests", {"required_tags": ["race-condition-boundary", "action_template"]}),
+            PrimitiveActionStep("code-sandbox", "Construct race payload sequences and timing exploit scripts", {"required_tags": ["race-condition-boundary", "action_template"]}),
+            PrimitiveActionStep("session-materialize", "Multi-identity concurrent session attempts", {"required_tags": ["race-condition-boundary", "action_template"]}),
+        ],
+        PatternNodeKind.VERIFICATION_GATE: [
+            PrimitiveActionStep("extract-candidate", "Extract candidate flag from race-condition responses", {"required_tags": ["race-condition-boundary", "verification_gate"]}),
+        ],
+        PatternNodeKind.FALLBACK: [
+            PrimitiveActionStep("structured-parse", "Record race-condition dead ends and alternate timing paths", {"required_tags": ["race-condition-boundary", "fallback"]}),
         ],
     },
 }

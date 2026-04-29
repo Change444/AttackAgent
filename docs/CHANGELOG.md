@@ -9,6 +9,7 @@
 
 | 版本 | 日期 | 变更说明 |
 |------|------|----------|
+| 3.14 | 2026-04-29 | Phase 3 R9 扩展族关键词 6→14：新增 ssrf-server-boundary(ssrf/internal/proxy/metadata/9关键词) + ssti-template-boundary(ssti/jinja/mako/twig/10关键词) + csrf-state-boundary(csrf/cross-site/forgery/referer/8关键词) + idor-access-boundary(idor/insecure/privilege/uuid/10关键词) + crypto-math-boundary(rsa/aes/ecb/cbc/padding/oracle/16关键词) + pwn-memory-boundary(pwn/overflow/rop/gadget/13关键词) + protocol-logic-boundary(protocol/tcp/dns/mqtt/serialization/14关键词) + race-condition-boundary(race/concurrent/toctou/11关键词)，FAMILY_PROFILES + FAMILY_PROGRAMS 各 8 族 4 节点完整步骤，8 项族匹配测试 + 2 项启发式测试 + 14 族完整性 + 关键词重叠检查，305 测试通过 |
 | 3.13 | 2026-04-29 | Phase 2 R8 code-sandbox 放宽：_SafeAstValidator 移除 ClassDef/With/Raise 禁止(添加 visit_ClassDef 跟踪类名), SAFE_IMPORTS 加入 zlib/csv(9→11), SAFE_BUILTINS 加入 __build_class__, globals_scope 加入 __name__, ConstraintAwareReasoner 更新 code-sandbox 描述, 测试新增 class/with/raise/zlib/csv 5 项, 297 测试通过 |
 | 3.12 | 2026-04-29 | Phase 2 R7 artifact-scan 提取 ZIP/tar 内容 + 增大预览：_extract_archive_members 添加 content_preview(ZIP/tar 成员文本内容) + content_type(_guess_content_type 扩展名映射), _extract_text_preview 上限 128→4096 默认 64→512, _perform_artifact_scan 返回 (payload, temp_dir) 元组延迟清理, _execute_artifact_scan 批量清理 temp_dirs, Observation payload 新增 content_type 字段, PrimitiveRegistry + ConstraintAwareReasoner 新增 max_depth/max_members 参数, 292 测试全通过 |
 | 3.11 | 2026-04-29 | Phase 2 R6 session-materialize CSRF 预取 + JSON body：_CSRFTokenParser(HTML hidden input + meta tag 解析), _extract_csrf_token(csrf_field/csrf_source 自动检测), _execute_session_materialize CSRF GET 预取(form/meta/header 3 来源) + JSON body 登录(json/content_type spec 字段) + auth token 持久化回写 session_manager.add_auth_header(), Observation payload 新增 csrf_prefetched/csrf_token_value/body_type 字段, PrimitiveRegistry + ConstraintAwareReasoner 新字段, 284 测试全通过 |
@@ -47,6 +48,7 @@
 | M13 | Phase 2 R6 session-materialize CSRF + JSON body | 2026-04-29 |
 | M14 | Phase 2 R7 artifact-scan ZIP/tar 内容提取 + 增大预览 | 2026-04-29 |
 | M15 | Phase 2 R8 code-sandbox 放宽 class/with/raise + zlib/csv | 2026-04-29 |
+| M16 | Phase 3 R9 扩展族关键词 6→14 | 2026-04-29 |
 
 ---
 
@@ -72,6 +74,7 @@
 | P1 | session-materialize CSRF 预取 + JSON body（CSRF 3 来源 + JSON 登录 + auth 持久化） | 1 天 | 2026-04-29 |
 | P1 | artifact-scan 提取 ZIP/tar 内容 + 保留临时文件 + 增大预览（content_preview + content_type + 预览 512→4096） | 0.5 天 | 2026-04-29 |
 | P1 | code-sandbox 放宽（class/with/raise 允许 + zlib/csv 导入） | 0.5 天 | 2026-04-29 |
+| P2 | 扩展族关键词 6→14（+SSRF/SSTI/CSRF/IDOR/RSA/pwn/协议/竞态） | 1 天 | 2026-04-29 |
 
 ---
 
@@ -95,6 +98,7 @@
 | session-materialize 仅 form POST 登录（CSRF/JSON body 部分） | v3.11 | _CSRFTokenParser + _extract_csrf_token(CSRF 3 来源), JSON body 登录(json/content_type), auth token 持久化回写 session_manager.add_auth_header(), Observation payload csrf_prefetched/csrf_token_value/body_type |
 | artifact-scan 不提取 ZIP/tar 内容（仅列文件名），预览仅 64 字节，下载后立即清理临时文件 | v3.12 | _extract_archive_members 添加 content_preview(ZIP/tar 成员文本预览) + content_type(_guess_content_type 扩展名→MIME 映射), _extract_text_preview 上限 128→4096 默认 64→512, _perform_artifact_scan 返回 (payload, temp_dir) 元组延迟清理, Observation payload 新增 content_type 字段 |
 | code-sandbox 禁止 class/with/raise，缺少 zlib/csv 解码库 | v3.13 | _SafeAstValidator 移除 ClassDef/With/Raise 禁止 + visit_ClassDef 跟踪类名, SAFE_IMPORTS 加入 zlib/csv, SAFE_BUILTINS 加入 __build_class__, globals_scope 加入 __name__, class/with/raise 可用 |
+| 6 个族关键词过浅，缺少 SSRF/SSTI/CSRF/IDOR/RSA/pwn/协议分析等族 | v3.14 | FAMILY_KEYWORDS 6→14，新增 ssrf-server/ssti-template/csrf-state/idor-access/crypto-math/pwn-memory/protocol-logic/race-condition 8 族，FAMILY_PROFILES + FAMILY_PROGRAMS 4 节点完整步骤，族关键词覆盖常见 CTF 类别(web/crypto/pwn/forensics/protocol) |
 
 ---
 
@@ -127,7 +131,7 @@
 
 | # | 问题 | 影响范围 | 严重度 |
 |---|------|----------|--------|
-| S1 | 6 个族关键词过浅，缺少 SSRF/SSTI/CSRF/IDOR/RSA/pwn/协议分析等族 | 多数 CTF 类别无匹配，无匹配时返回 None | 致命 |
+| S1 | ~~6 个族关键词过浅，缺少 SSRF/SSTI/CSRF/IDOR/RSA/pwn/协议分析等族~~ → 已解决 | ~~多数 CTF 类别无匹配，无匹配时返回 None~~ → v3.14 族关键词 6→14，覆盖 SSRF/SSTI/CSRF/IDOR/crypto/pwn/协议/竞态 8 族，FAMILY_PROGRAMS 4 节点完整步骤 | ~~致命~~ → 已解决 |
 | S2 | FAMILY_PROGRAMS 步骤不含挑战特定参数（URL/路径/payload） | 步骤是空模板，无法执行具体操作 | 高 |
 | S3 | ~~停滞阈值 3 次连续失败就放弃~~ → 已解决 | 真实解题通常需 10+ 次迭代 → v3.6 stagnation_threshold→8 可配置 | ~~高~~ → 已解决 |
 | S4 | max_cycles 默认 12 次 | 远不够真实解题所需 | 高 |
@@ -146,7 +150,7 @@
 
 #### 当前能解 vs 不能解
 
-**勉强能解（约 20-25% CTF 题）**：
+**勉强能解（约 25-30% CTF 题）**：
 - 简单 HTTP GET 页面 + HTML 注释隐藏 flag
 - 简单 base64/xor/hex/zlib 压缩/CSV 解析编码题（code-sandbox class/with/raise 可解）
 - 简单 class 结构化解码（RSA/AES 参数组装、自定义解码器）
@@ -160,14 +164,20 @@
 - CSRF token 保护登录页面（Django/Flask-WTF 等）
 - JSON body API 登录
 - ZIP/tar 内嵌 flag（内容提取 + 文本预览）
+- SSRF 类题（族关键词匹配 + HTTP 探测，但复杂 SSRF 仍受限）
+- SSTI 类题（族关键词匹配 + 模板注入探测，但高级 SSTI 需 JS 渲染）
+- IDOR 类题（族关键词匹配 + 身份切换探测）
+- 简单密码题（族关键词匹配 + code-sandbox 数学运算）
+- pwn 类题（族关键词匹配 + binary-inspect 基础分析）
+- 协议分析类题（族关键词匹配 + artifact-scan pcap 扫描）
 
-**完全不能解（约 70-75% CTF 题）**：
-- JS 渲染/JS 操纵类 web 题
-- SSRF、SSTI、IDOR、race condition
-- 现代密码题（RSA、AES、padding oracle）
-- Reverse/pwn 题
-- Forensics 取证题（无 pcap/EXIF、无磁盘映像分析）
+**完全不能解（约 60-65% CTF 题）**：
+- JS 渲染/JS 操纵类 web 题（Playwright 可渲染，但复杂 DOM 操纵仍受限）
+- 现代密码题（RSA/AES/padding oracle，crypto 库不可用）
+- Reverse/pwn 题（无反汇编、无调试器）
+- Forensics 取证题（无 pcap 深度分析、无 EXIF/磁盘映像）
 - 多步认证（2FA、OAuth、JWT 操纵）
+- 复杂竞态条件（无并发请求基础设施）
 
 ---
 
@@ -199,7 +209,7 @@
 
 | # | 任务 | 工作量 | 交付物 |
 |---|------|--------|--------|
-| R9 | 扩展 FAMILY_KEYWORDS：+SSRF/SSTI/CSRF/IDOR/RSA/pwn/协议等 8 族 | 1 天 | 14 族关键词 + FAMILY_PROGRAMS + 测试 |
+| R9 | 扩展 FAMILY_KEYWORDS：+SSRF/SSTI/CSRF/IDOR/RSA/pwn/协议等 8 族 | 1 天 | 14 族关键词 + FAMILY_PROGRAMS + 测试 | 2026-04-29 |
 | R10 | 步骤参数注入：挑战 target/endpoint/credential 注入步骤模板 | 1 天 | 动态参数填充 + 测试 |
 | R11 | 实现 switch_path() 真实逻辑 | 0.5 天 | 路径切换 + 测试 |
 | R12 | 多族组合：允许 plan 融合 2 个族的步骤 | 0.5 天 | 组合策略 + 测试 |

@@ -143,6 +143,44 @@ class TestHeuristicFreeExplorationPlanner(unittest.TestCase):
         program = planner.generate_constrained_plan(context)
         self.assertIsNotNone(program)
 
+    def test_generate_plan_returns_program_for_ssrf_match(self):
+        """Challenge with SSRF keywords should produce a plan"""
+        challenge = ChallengeDefinition(
+            id="c5", name="Internal Proxy", category="web",
+            difficulty="medium", target="http://127.0.0.1:8000",
+            description="ssrf internal proxy fetch metadata cloud redirect challenge",
+        )
+        sg, record = _make_record(challenge)
+        planner = self._make_planner(sg.episode_memory)
+        context = PlanningContext(
+            record=record, attempt_count=0,
+            historical_success_rate=0.0, complexity_score=0.5,
+            pattern_confidence=0.0, exploration_budget=3,
+        )
+        program = planner.generate_constrained_plan(context)
+        self.assertIsNotNone(program)
+        self.assertEqual(program.planner_source, "free_exploration_heuristic")
+        self.assertTrue(len(program.steps) > 0)
+
+    def test_generate_plan_returns_program_for_crypto_match(self):
+        """Challenge with crypto keywords should produce a plan"""
+        challenge = ChallengeDefinition(
+            id="c6", name="RSA Padding", category="crypto",
+            difficulty="hard", target="http://127.0.0.1:8000",
+            description="rsa aes padding oracle ciphertext crypto challenge",
+        )
+        sg, record = _make_record(challenge)
+        planner = self._make_planner(sg.episode_memory)
+        context = PlanningContext(
+            record=record, attempt_count=0,
+            historical_success_rate=0.0, complexity_score=0.5,
+            pattern_confidence=0.0, exploration_budget=3,
+        )
+        program = planner.generate_constrained_plan(context)
+        self.assertIsNotNone(program)
+        self.assertEqual(program.planner_source, "free_exploration_heuristic")
+        self.assertTrue(len(program.steps) > 0)
+
     def test_integration_model_none_creates_enhanced_planner(self):
         """model=None should now create EnhancedAPGPlanner with HeuristicFreeExplorationPlanner"""
         from attack_agent.platform import CompetitionPlatform

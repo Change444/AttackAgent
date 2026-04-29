@@ -4,8 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from attack_agent.apg import APGPlanner, CodeSandbox, EpisodeMemory, PatternLibrary
-from attack_agent.platform_models import ChallengeDefinition, EpisodeEntry, PrimitiveActionStep, ProjectSnapshot
+from attack_agent.apg import APGPlanner, CodeSandbox, EpisodeMemory, PatternLibrary, FAMILY_KEYWORDS, FAMILY_PROGRAMS, FAMILY_PROFILES
+from attack_agent.platform_models import ChallengeDefinition, EpisodeEntry, PatternNodeKind, PrimitiveActionStep, ProjectSnapshot, WorkerProfile
 from attack_agent.reasoning import HeuristicReasoner, LLMReasoner, PlanCandidate, ReasoningContext, StaticReasoningModel
 
 
@@ -26,6 +26,98 @@ class APGEngineTests(unittest.TestCase):
         )
         graph = planner.create_graph(snapshot)
         self.assertEqual("identity-boundary", graph.family_priority[0])
+
+    def test_pattern_graph_prioritizes_ssrf_family(self) -> None:
+        planner = APGPlanner(EpisodeMemory(), PatternLibrary())
+        snapshot = ProjectSnapshot(
+            project_id="project:ssrf-1",
+            challenge=ChallengeDefinition(
+                id="ssrf-1",
+                name="Internal Proxy",
+                category="web",
+                difficulty="medium",
+                target="http://demo",
+                description="A fetch endpoint proxies requests to internal services and cloud metadata.",
+                metadata={"signals": ["ssrf", "internal", "metadata", "cloud"]},
+            ),
+        )
+        graph = planner.create_graph(snapshot)
+        self.assertEqual("ssrf-server-boundary", graph.family_priority[0])
+
+    def test_pattern_graph_prioritizes_ssti_family(self) -> None:
+        planner = APGPlanner(EpisodeMemory(), PatternLibrary())
+        snapshot = ProjectSnapshot(
+            project_id="project:ssti-1",
+            challenge=ChallengeDefinition(
+                id="ssti-1",
+                name="Jinja Injection",
+                category="web",
+                difficulty="medium",
+                target="http://demo",
+                description="A jinja template engine evaluates user expressions and renders output.",
+                metadata={"signals": ["ssti", "jinja", "expression"]},
+            ),
+        )
+        graph = planner.create_graph(snapshot)
+        self.assertEqual("ssti-template-boundary", graph.family_priority[0])
+
+    def test_pattern_graph_prioritizes_crypto_family(self) -> None:
+        planner = APGPlanner(EpisodeMemory(), PatternLibrary())
+        snapshot = ProjectSnapshot(
+            project_id="project:crypto-1",
+            challenge=ChallengeDefinition(
+                id="crypto-1",
+                name="RSA Padding Oracle",
+                category="crypto",
+                difficulty="hard",
+                target="http://demo",
+                description="An RSA padding oracle leaks ciphertext plaintext information through differential responses.",
+                metadata={"signals": ["rsa", "padding", "oracle"]},
+            ),
+        )
+        graph = planner.create_graph(snapshot)
+        self.assertEqual("crypto-math-boundary", graph.family_priority[0])
+
+    def test_pattern_graph_prioritizes_pwn_family(self) -> None:
+        planner = APGPlanner(EpisodeMemory(), PatternLibrary())
+        snapshot = ProjectSnapshot(
+            project_id="project:pwn-1",
+            challenge=ChallengeDefinition(
+                id="pwn-1",
+                name="Buffer Overflow ROP",
+                category="pwn",
+                difficulty="hard",
+                target="http://demo",
+                description="A buffer overflow with ROP gadgets allows shellcode execution bypassing NX.",
+                metadata={"signals": ["pwn", "overflow", "rop", "gadget"]},
+            ),
+        )
+        graph = planner.create_graph(snapshot)
+        self.assertEqual("pwn-memory-boundary", graph.family_priority[0])
+
+    def test_all_14_families_have_keywords_profiles_and_programs(self) -> None:
+        """All 14 families must have keywords, profiles, and 4-node programs"""
+        for family in FAMILY_KEYWORDS:
+            self.assertIn(family, FAMILY_PROFILES, f"{family} missing from FAMILY_PROFILES")
+            self.assertIn(family, FAMILY_PROGRAMS, f"{family} missing from FAMILY_PROGRAMS")
+            programs = FAMILY_PROGRAMS[family]
+            for kind in (PatternNodeKind.OBSERVATION_GATE, PatternNodeKind.ACTION_TEMPLATE, PatternNodeKind.VERIFICATION_GATE, PatternNodeKind.FALLBACK):
+                self.assertIn(kind, programs, f"{family} missing {kind} in FAMILY_PROGRAMS")
+                self.assertTrue(len(programs[kind]) > 0, f"{family} has empty {kind} steps")
+        self.assertEqual(len(FAMILY_KEYWORDS), 14, "Expected 14 families")
+
+    def test_new_family_keywords_have_low_overlap_with_core(self) -> None:
+        """New 8 families should not heavily overlap keywords with original 6 families"""
+        core_families = {"identity-boundary", "input-interpreter-boundary", "reflection-render-boundary",
+                         "file-archive-forensics", "encoding-transform", "binary-string-extraction"}
+        new_families = set(FAMILY_KEYWORDS.keys()) - core_families
+        for new_fam in new_families:
+            new_kws = set(FAMILY_KEYWORDS[new_fam])
+            for core_fam in core_families:
+                core_kws = set(FAMILY_KEYWORDS[core_fam])
+                overlap = new_kws & core_kws
+                self.assertLessEqual(len(overlap), 1,
+                                     f"{new_fam} overlaps {core_fam} by {overlap} (>1 keyword)")
 
     def test_episode_memory_returns_relevant_hits(self) -> None:
         memory = EpisodeMemory()

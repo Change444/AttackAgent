@@ -73,6 +73,7 @@ platform.solve_all()
 - SecurityConstraints 值来自 SecurityConfig（单一源），见 `attack_agent/constraints.py`
 - 原语无配置时干净失败（`_clean_fail`），不再假装工作
 - CodeSandbox 规则见 `attack_agent/apg.py` SAFE_BUILTINS / SAFE_IMPORTS（class/with/raise 已允许，lambda/global/nonlocal/delete/async 仍禁止；SAFE_IMPORTS 含 zlib/csv）
+- 族关键词见 `attack_agent/apg.py` FAMILY_KEYWORDS（14 族：identity/input-interpreter/reflection-render/file-archive/encoding/binary + ssrf-server/ssti-template/csrf-state/idor-access/crypto-math/pwn-memory/protocol-logic/race-condition）
 - 配置字段定义见 `attack_agent/config.py` 和 `config/settings.json`
 - 可选依赖见 `pyproject.toml`
 
@@ -86,7 +87,7 @@ platform.solve_all()
 当前系统**解题率约 25-30%**（已可连接真实 CTFd 靶场）。关键差距：
 - browser-inspect 不执行 JS、session-materialize 无多步认证 → web 题 70% 不能解
 - code-sandbox 仍禁止 lambda + 无 crypto 库 → 高级密码题不能解（class/with/raise + zlib/csv 已放开）
-- 6 族关键词过浅 + 步骤空模板 → 规划策略僵硬
+- 步骤空模板 → 规划策略僵硬（14 族关键词已覆盖主流 CTF 类别）
 
 **完整问题清单 + 四阶段解决计划**：见 [docs/CHANGELOG.md](docs/CHANGELOG.md) "Current Limitations & Roadmap" 章节
 
