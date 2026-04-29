@@ -70,6 +70,24 @@ class ModelConfig:
 
 
 @dataclass(slots=True)
+class HttpConfig:
+    engine: str = "auto"               # "auto" | "requests" | "stdlib"
+    verify_ssl: bool = True             # False allows self-signed certs
+    max_redirects: int = 10
+    timeout_seconds: float = 10.0
+
+
+@dataclass(slots=True)
+class BrowserConfig:
+    engine: str = "auto"           # "auto" | "playwright" | "stdlib"
+    headless: bool = True
+    browser_type: str = "chromium"  # "chromium" | "firefox" | "webkit"
+    timeout_seconds: float = 30.0
+    wait_for_selector: str | None = None
+    extract_scripts: bool = True
+
+
+@dataclass(slots=True)
 class LoggingConfig:
     level: str = "INFO"
     enable_event_logging: bool = True
@@ -86,6 +104,8 @@ class AttackAgentConfig:
     memory: MemoryConfig
     logging: LoggingConfig
     model: ModelConfig = field(default_factory=ModelConfig)
+    browser: BrowserConfig = field(default_factory=BrowserConfig)
+    http: HttpConfig = field(default_factory=HttpConfig)
 
     @classmethod
     def from_defaults(cls) -> AttackAgentConfig:
@@ -99,6 +119,8 @@ class AttackAgentConfig:
             memory=MemoryConfig(),
             logging=LoggingConfig(),
             model=ModelConfig(),
+            browser=BrowserConfig(),
+            http=HttpConfig(),
         )
 
     @classmethod
@@ -123,4 +145,6 @@ class AttackAgentConfig:
             memory=MemoryConfig(**data.get("memory", {})),
             logging=LoggingConfig(**data.get("logging", {})),
             model=ModelConfig(**data.get("model", {})),
+            browser=BrowserConfig(**data.get("browser", {})),
+            http=HttpConfig(**data.get("http", {})),
         )

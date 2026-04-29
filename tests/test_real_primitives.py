@@ -155,6 +155,16 @@ class HttpSessionManagerTests(unittest.TestCase):
         jar = mgr.cookie_jar
         self.assertEqual(len(list(jar)), 0)
 
+    def test_auth_headers_default_empty(self):
+        mgr = HttpSessionManager()
+        self.assertEqual(mgr.get_auth_headers(), {})
+
+    def test_add_and_get_auth_headers(self):
+        mgr = HttpSessionManager()
+        mgr.add_auth_header("Authorization", "Bearer abc123")
+        headers = mgr.get_auth_headers()
+        self.assertEqual(headers["Authorization"], "Bearer abc123")
+
 
 class HTTPRequestEnhancedTests(unittest.TestCase):
     @classmethod
@@ -210,6 +220,34 @@ class HTTPRequestEnhancedTests(unittest.TestCase):
         from attack_agent.runtime import _perform_http_request
         result = _perform_http_request(spec, self.base_url, session_mgr)
         self.assertEqual(result["status_code"], 200)
+
+    def test_perform_http_request_has_r5_fields(self):
+        session_mgr = HttpSessionManager()
+        spec = {"url": f"{self.base_url}/"}
+        from attack_agent.runtime import _perform_http_request
+        result = _perform_http_request(spec, self.base_url, session_mgr)
+        self.assertIn("auth_used", result)
+        self.assertEqual(result["auth_used"], "none")
+        self.assertIn("ssl_verified", result)
+        self.assertEqual(result["ssl_verified"], True)
+        self.assertIn("uploaded_files", result)
+        self.assertEqual(result["uploaded_files"], [])
+
+    def test_resolve_http_request_specs_includes_auth_fields(self):
+        from attack_agent.runtime import _resolve_http_request_specs, PrimitiveActionStep
+        metadata = {
+            "http_request": {
+                "url": "http://test/",
+                "auth": {"username": "admin", "password": "pass"},
+                "auth_type": "basic",
+            }
+        }
+        bundle = _make_bundle(target="http://test/", metadata=metadata)
+        step = PrimitiveActionStep(primitive="http-request", instruction="test", parameters={})
+        specs = _resolve_http_request_specs(step, bundle)
+        self.assertTrue(len(specs) > 0)
+        self.assertIn("auth", specs[0])
+        self.assertEqual(specs[0]["auth_type"], "basic")
 
 
 class SessionMaterializeTests(unittest.TestCase):
@@ -428,10 +466,40 @@ class CodeSandboxRelaxedTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             sandbox.execute("import os\nresult = {}", {})
 
-    def test_disallowed_class_definition(self):
+    def test_class_definition_allowed(self):
         sandbox = CodeSandbox()
-        with self.assertRaises(RuntimeError):
-            sandbox.execute("class Foo:\n    pass\nresult = {}", {})
+        result = sandbox.execute(
+            "class Decoder:\n    def __init__(self, data):\n        self.data = data\n    def decode(self):\n        return self.data[::-1]\nresult = {'decoded': Decoder('hello').decode()}", {}
+        )
+        self.assertEqual(result["decoded"], "olleh")
+
+    def test_with_statement_allowed(self):
+        sandbox = CodeSandbox()
+        result = sandbox.execute(
+            "class CM:\n    def __enter__(self):\n        return 'entered'\n    def __exit__(self, *args):\n        pass\nwith CM() as val:\n    result = {'context': val}", {}
+        )
+        self.assertEqual(result["context"], "entered")
+
+    def test_raise_statement_allowed(self):
+        sandbox = CodeSandbox()
+        result = sandbox.execute(
+            "try:\n    raise ValueError('test error')\nexcept ValueError as e:\n    result = {'error': str(e)}", {}
+        )
+        self.assertEqual(result["error"], "test error")
+
+    def test_safe_import_zlib(self):
+        sandbox = CodeSandbox()
+        result = sandbox.execute(
+            "import zlib\ndata = b'CTF data payload'\ncompressed = zlib.compress(data)\nresult = {'decompressed': zlib.decompress(compressed).decode()}", {}
+        )
+        self.assertEqual(result["decompressed"], "CTF data payload")
+
+    def test_safe_import_csv(self):
+        sandbox = CodeSandbox()
+        result = sandbox.execute(
+            "import csv\nrows = list(csv.reader(['a,b,c', '1,2,3']))\nresult = {'rows': rows}", {}
+        )
+        self.assertEqual(result["rows"], [["a", "b", "c"], ["1", "2", "3"]])
 
     def test_safe_ast_validator_safe_imports(self):
         validator = _SafeAstValidator(set(CodeSandbox.SAFE_BUILTINS), CodeSandbox.SAFE_IMPORTS)
@@ -482,6 +550,34 @@ class BrowserInspectNonLocalhostTests(unittest.TestCase):
         self.assertTrue(len(result["comments"]) > 0)
 
 
+class BrowserInspectScriptsTests(unittest.TestCase):
+    """Test _HTMLPageParser script extraction when extract_scripts=True."""
+
+    def test_parse_html_page_extracts_script_src_when_enabled(self):
+        html = "<html><head><script src='/app.js' type='text/javascript'></script></head><body>Hello</body></html>"
+        result = _parse_html_page(html, "http://test.com", extract_scripts=True)
+        self.assertEqual(len(result["scripts"]), 1)
+        self.assertEqual(result["scripts"][0]["src"], "/app.js")
+        self.assertEqual(result["scripts"][0]["type"], "text/javascript")
+
+    def test_parse_html_page_extracts_inline_script_when_enabled(self):
+        html = "<html><head><script>var x = 'flag{inline}';</script></head><body>Hello</body></html>"
+        result = _parse_html_page(html, "http://test.com", extract_scripts=True)
+        self.assertEqual(len(result["scripts"]), 1)
+        self.assertIn("flag{inline}", result["scripts"][0]["inline"])
+
+    def test_parse_html_page_no_scripts_by_default(self):
+        html = "<html><head><script src='/app.js'></script></head><body>Hello</body></html>"
+        result = _parse_html_page(html, "http://test.com")
+        self.assertEqual(result["scripts"], [])
+
+    def test_parse_html_page_scripts_do_not_pollute_rendered_text(self):
+        html = "<html><head><script>alert('nope');</script></head><body>Visible text</body></html>"
+        result = _parse_html_page(html, "http://test.com", extract_scripts=True)
+        self.assertNotIn("nope", result["rendered_text"])
+        self.assertIn("Visible text", result["rendered_text"])
+
+
 class ArtifactScanHTTPDownloadTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -528,6 +624,186 @@ class ArtifactScanHTTPDownloadTests(unittest.TestCase):
         outcome = _execute_artifact_scan(step, bundle, None)
         self.assertEqual(outcome.status, "ok")
         self.assertIn("text_preview", outcome.observations[0].payload)
+
+
+class ArtifactScanEnhancedTests(unittest.TestCase):
+    """Tests for R7: ZIP/tar content extraction, increased preview, content_type, deferred cleanup."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmpdir = tempfile.TemporaryDirectory()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmpdir.cleanup()
+
+    # -- ZIP content extraction --
+
+    def test_zip_content_preview(self):
+        zip_path = Path(self.tmpdir.name) / "content.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("readme.txt", "flag{zip_content_preview}")
+            zf.writestr("config.json", '{"secret": "flag{zip_json_config}"}')
+        metadata = {"artifact_scan": {"url": zip_path.as_uri()}}
+        bundle = _make_bundle(target=zip_path.as_uri(), metadata=metadata)
+        step = PrimitiveActionStep(primitive="artifact-scan", instruction="scan", parameters={})
+        from attack_agent.runtime import _execute_artifact_scan
+        outcome = _execute_artifact_scan(step, bundle, None)
+        self.assertEqual(outcome.status, "ok")
+        payload = outcome.observations[0].payload
+        members = payload["archive_members"]
+        readme_member = next(m for m in members if m["name"] == "readme.txt")
+        self.assertIn("content_preview", readme_member)
+        self.assertIn("flag{zip_content_preview}", readme_member["content_preview"])
+        config_member = next(m for m in members if m["name"] == "config.json")
+        self.assertIn("content_preview", config_member)
+        self.assertIn("flag{zip_json_config}", config_member["content_preview"])
+
+    def test_zip_content_type_guessing(self):
+        zip_path = Path(self.tmpdir.name) / "types.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("data.json", '{"key": "value"}')
+            zf.writestr("page.html", '<html><body>test</body></html>')
+            zf.writestr("script.py", 'print("hello")')
+        metadata = {"artifact_scan": {"url": zip_path.as_uri()}}
+        bundle = _make_bundle(target=zip_path.as_uri(), metadata=metadata)
+        step = PrimitiveActionStep(primitive="artifact-scan", instruction="scan", parameters={})
+        from attack_agent.runtime import _execute_artifact_scan
+        outcome = _execute_artifact_scan(step, bundle, None)
+        self.assertEqual(outcome.status, "ok")
+        payload = outcome.observations[0].payload
+        members = payload["archive_members"]
+        json_m = next(m for m in members if m["name"] == "data.json")
+        self.assertEqual(json_m["content_type"], "application/json")
+        html_m = next(m for m in members if m["name"] == "page.html")
+        self.assertEqual(html_m["content_type"], "text/html")
+        py_m = next(m for m in members if m["name"] == "script.py")
+        self.assertEqual(py_m["content_type"], "text/x-python")
+
+    def test_zip_binary_member_no_preview(self):
+        zip_path = Path(self.tmpdir.name) / "mixed.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("readme.txt", "plain text flag{mixed_zip}")
+            # Write binary data (null bytes → no text preview)
+            zf.writestr("binary.bin", b"\x00\x01\x02\x03flag\xff\xfe")
+        metadata = {"artifact_scan": {"url": zip_path.as_uri()}}
+        bundle = _make_bundle(target=zip_path.as_uri(), metadata=metadata)
+        step = PrimitiveActionStep(primitive="artifact-scan", instruction="scan", parameters={})
+        from attack_agent.runtime import _execute_artifact_scan
+        outcome = _execute_artifact_scan(step, bundle, None)
+        self.assertEqual(outcome.status, "ok")
+        payload = outcome.observations[0].payload
+        members = payload["archive_members"]
+        text_m = next(m for m in members if m["name"] == "readme.txt")
+        self.assertIn("content_preview", text_m)
+        bin_m = next(m for m in members if m["name"] == "binary.bin")
+        self.assertNotIn("content_preview", bin_m)
+
+    # -- tar content extraction --
+
+    def test_tar_content_preview(self):
+        tar_path = Path(self.tmpdir.name) / "content.tar"
+        with tarfile.open(tar_path, "w") as tf:
+            info = tarfile.TarInfo(name="notes.txt")
+            data = b"flag{tar_content_preview}"
+            info.size = len(data)
+            tf.addfile(info, __import__("io").BytesIO(data))
+        metadata = {"artifact_scan": {"url": tar_path.as_uri()}}
+        bundle = _make_bundle(target=tar_path.as_uri(), metadata=metadata)
+        step = PrimitiveActionStep(primitive="artifact-scan", instruction="scan", parameters={})
+        from attack_agent.runtime import _execute_artifact_scan
+        outcome = _execute_artifact_scan(step, bundle, None)
+        self.assertEqual(outcome.status, "ok")
+        payload = outcome.observations[0].payload
+        members = payload["archive_members"]
+        notes_m = next(m for m in members if m["name"] == "notes.txt")
+        self.assertIn("content_preview", notes_m)
+        self.assertIn("flag{tar_content_preview}", notes_m["content_preview"])
+
+    def test_targz_content_preview(self):
+        targz_path = Path(self.tmpdir.name) / "content.tar.gz"
+        with tarfile.open(targz_path, "w:gz") as tf:
+            info = tarfile.TarInfo(name="secret.txt")
+            data = b"flag{targz_content}"
+            info.size = len(data)
+            tf.addfile(info, __import__("io").BytesIO(data))
+        metadata = {"artifact_scan": {"url": targz_path.as_uri()}}
+        bundle = _make_bundle(target=targz_path.as_uri(), metadata=metadata)
+        step = PrimitiveActionStep(primitive="artifact-scan", instruction="scan", parameters={})
+        from attack_agent.runtime import _execute_artifact_scan
+        outcome = _execute_artifact_scan(step, bundle, None)
+        self.assertEqual(outcome.status, "ok")
+        payload = outcome.observations[0].payload
+        members = payload["archive_members"]
+        secret_m = next(m for m in members if m["name"] == "secret.txt")
+        self.assertIn("content_preview", secret_m)
+        self.assertIn("flag{targz_content}", secret_m["content_preview"])
+
+    # -- Increased preview size --
+
+    def test_increased_preview_default_512(self):
+        # Create a file longer than old 64-byte default but shorter than 512
+        long_text = "A" * 300 + " flag{long_preview} " + "B" * 200
+        file_path = Path(self.tmpdir.name) / "long.txt"
+        file_path.write_text(long_text, encoding="utf-8")
+        metadata = {"artifact_scan": {"url": file_path.as_uri()}}
+        bundle = _make_bundle(target=file_path.as_uri(), metadata=metadata)
+        step = PrimitiveActionStep(primitive="artifact-scan", instruction="scan", parameters={})
+        from attack_agent.runtime import _execute_artifact_scan
+        outcome = _execute_artifact_scan(step, bundle, None)
+        self.assertEqual(outcome.status, "ok")
+        preview = outcome.observations[0].payload["text_preview"]
+        # Should contain flag that's at position ~300, well past old 64-byte limit
+        self.assertIn("flag{long_preview}", preview)
+
+    def test_preview_bytes_override(self):
+        # Override preview_bytes to a specific value via step.parameters
+        file_path = Path(self.tmpdir.name) / "override.txt"
+        file_path.write_text("flag{short} " + "X" * 200, encoding="utf-8")
+        metadata = {"artifact_scan": {"url": file_path.as_uri()}}
+        bundle = _make_bundle(target=file_path.as_uri(), metadata=metadata)
+        step = PrimitiveActionStep(primitive="artifact-scan", instruction="scan", parameters={"preview_bytes": 15})
+        from attack_agent.runtime import _execute_artifact_scan
+        outcome = _execute_artifact_scan(step, bundle, None)
+        self.assertEqual(outcome.status, "ok")
+        preview = outcome.observations[0].payload["text_preview"]
+        # With preview_bytes=15, "flag{short}" (10 chars) fits
+        self.assertIn("flag{short}", preview)
+        self.assertTrue(len(preview) <= 15)
+
+    # -- content_type on main payload --
+
+    def test_payload_content_type(self):
+        file_path = Path(self.tmpdir.name) / "data.json"
+        file_path.write_text('{"flag": "flag{json_file}"}', encoding="utf-8")
+        metadata = {"artifact_scan": {"url": file_path.as_uri()}}
+        bundle = _make_bundle(target=file_path.as_uri(), metadata=metadata)
+        step = PrimitiveActionStep(primitive="artifact-scan", instruction="scan", parameters={})
+        from attack_agent.runtime import _execute_artifact_scan
+        outcome = _execute_artifact_scan(step, bundle, None)
+        self.assertEqual(outcome.status, "ok")
+        payload = outcome.observations[0].payload
+        self.assertEqual(payload["content_type"], "application/json")
+
+    # -- Backward compat: old tests still work --
+
+    def test_backward_compat_zip_member_list(self):
+        zip_path = Path(self.tmpdir.name) / "compat.zip"
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("a.txt", "hello")
+            zf.writestr("b.txt", "world")
+        metadata = {"artifact_scan": {"url": zip_path.as_uri()}}
+        bundle = _make_bundle(target=zip_path.as_uri(), metadata=metadata)
+        step = PrimitiveActionStep(primitive="artifact-scan", instruction="scan", parameters={})
+        from attack_agent.runtime import _execute_artifact_scan
+        outcome = _execute_artifact_scan(step, bundle, None)
+        self.assertEqual(outcome.status, "ok")
+        payload = outcome.observations[0].payload
+        # Old keys still present
+        for member in payload["archive_members"]:
+            self.assertIn("name", member)
+            self.assertIn("size_bytes", member)
+            self.assertIn("content_type", member)  # new key
 
 
 class BinaryInspectEnhancedTests(unittest.TestCase):
@@ -639,6 +915,379 @@ class WorkerRuntimeSessionTests(unittest.TestCase):
         events, outcome = runtime.run_task(bundle)
         self.assertEqual(outcome.status, "ok")
         self.assertTrue(len(outcome.observations) >= 2)
+
+
+# ---- R6: session-materialize CSRF + JSON body test handlers ----
+
+class _SessionTestHandler(http.server.BaseHTTPRequestHandler):
+    """HTTP handler for session-materialize enhanced tests."""
+
+    def do_GET(self):
+        path = self.path.rstrip("/")
+        if path == "/csrf-login":
+            self.send_response(200)
+            self.send_header("Set-Cookie", "csrftoken=testcsrf123")
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            html = (
+                "<html><body>"
+                "<form action='/csrf-login' method='POST'>"
+                "<input type='hidden' name='csrfmiddlewaretoken' value='testcsrf123'/>"
+                "<input name='username'/><input name='password' type='password'/>"
+                "<input type='submit'/></form></body></html>"
+            )
+            self.wfile.write(html.encode("utf-8"))
+        elif path == "/csrf-meta-login":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            html = (
+                "<html><head><meta name='csrf-token' content='metatoken456'/></head>"
+                "<body><form action='/csrf-meta-login' method='POST'>"
+                "<input name='username'/><input name='password' type='password'/>"
+                "<input type='submit'/></form></body></html>"
+            )
+            self.wfile.write(html.encode("utf-8"))
+        elif path == "/csrf-header-login":
+            self.send_response(200)
+            self.send_header("X-CSRFToken", "headertoken789")
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            html = "<html><body><form action='/csrf-header-login' method='POST'>"
+            html += "<input name='username'/><input name='password' type='password'/>"
+            html += "<input type='submit'/></form></body></html>"
+            self.wfile.write(html.encode("utf-8"))
+        elif path == "/api/login":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<html><body>API login endpoint</body></html>")
+        elif path == "/auth-login":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<html><body>Login form</body></html>")
+        elif path == "/no-csrf-page":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<html><body>No CSRF here</body></html>")
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def do_POST(self):
+        path = self.path.rstrip("/")
+        if path == "/csrf-login":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8")
+            params = dict(parse.parse_qs(body).items())
+            csrf_token = params.get("csrfmiddlewaretoken")
+            username = params.get("username")
+            password = params.get("password")
+            if csrf_token == ["testcsrf123"] and username == ["admin"] and password == ["pass"]:
+                self.send_response(200)
+                self.send_header("Set-Cookie", "session=csrf_session_ok")
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"<html><body>CSRF Login OK</body></html>")
+            else:
+                self.send_response(403)
+                self.end_headers()
+                self.wfile.write(b"CSRF token missing or wrong")
+        elif path == "/csrf-meta-login":
+            csrf_header = self.headers.get("X-CSRFToken", "")
+            if csrf_header == "metatoken456":
+                self.send_response(200)
+                self.send_header("Set-Cookie", "session=meta_session_ok")
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"<html><body>Meta CSRF Login OK</body></html>")
+            else:
+                self.send_response(403)
+                self.end_headers()
+                self.wfile.write(b"CSRF header missing")
+        elif path == "/csrf-header-login":
+            csrf_header = self.headers.get("X-CSRFToken", "")
+            if csrf_header == "headertoken789":
+                self.send_response(200)
+                self.send_header("Set-Cookie", "session=header_session_ok")
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"<html><body>Header CSRF Login OK</body></html>")
+            else:
+                self.send_response(403)
+                self.end_headers()
+                self.wfile.write(b"CSRF header missing")
+        elif path == "/api/login":
+            content_type = self.headers.get("Content-Type", "")
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            if "application/json" in content_type:
+                try:
+                    data = json.loads(body)
+                    if data.get("username") == "admin" and data.get("password") == "pass":
+                        self.send_response(200)
+                        self.send_header("Authorization", "Bearer jwt_abc123")
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"token": "jwt_abc123", "user": "admin"}).encode())
+                    else:
+                        self.send_response(401)
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"error": "invalid credentials"}).encode())
+                except json.JSONDecodeError:
+                    self.send_response(400)
+                    self.end_headers()
+            else:
+                self.send_response(400)
+                self.end_headers()
+        elif path == "/auth-login":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length).decode("utf-8")
+            params = dict(parse.parse_qs(body).items())
+            if params.get("username") == ["admin"] and params.get("password") == ["pass"]:
+                self.send_response(200)
+                self.send_header("Authorization", "Bearer auth_test_token")
+                self.send_header("Set-Cookie", "session=auth_ok")
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(b"<html><body>Auth Login OK</body></html>")
+            else:
+                self.send_response(403)
+                self.end_headers()
+        elif path == "/json-form-login":
+            content_type = self.headers.get("Content-Type", "")
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            if "application/json" in content_type:
+                try:
+                    data = json.loads(body)
+                    if data.get("username") == "admin" and data.get("password") == "pass":
+                        self.send_response(200)
+                        self.send_header("Set-Cookie", "session=json_form_ok")
+                        self.send_header("Content-Type", "application/json")
+                        self.end_headers()
+                        self.wfile.write(json.dumps({"status": "ok"}).encode())
+                    else:
+                        self.send_response(403)
+                        self.end_headers()
+                except json.JSONDecodeError:
+                    self.send_response(400)
+                    self.end_headers()
+            else:
+                self.send_response(400)
+                self.end_headers()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def log_message(self, format, *args):
+        pass
+
+
+class SessionMaterializeEnhancedTests(unittest.TestCase):
+    """Tests for R6: CSRF prefetch + JSON body + auth token persistence."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = http.server.HTTPServer(("127.0.0.1", 0), _SessionTestHandler)
+        cls.port = cls.server.server_address[1]
+        cls.base_url = f"http://127.0.0.1:{cls.port}"
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+
+    def test_csrf_form_hidden(self):
+        """CSRF token extracted from hidden input and injected into form POST."""
+        from attack_agent.runtime import _execute_session_materialize, PrimitiveAdapter, PrimitiveActionSpec
+        metadata = {
+            "session_materialize": {
+                "login_url": f"{self.base_url}/csrf-login",
+                "username": "admin",
+                "password": "pass",
+                "method": "POST",
+                "csrf_token": True,
+                "csrf_field": "csrfmiddlewaretoken",
+            }
+        }
+        bundle = _make_bundle(target=self.base_url, metadata=metadata)
+        step = PrimitiveActionStep(primitive="session-materialize", instruction="login",
+                                    parameters={"required_tags": []})
+        session_mgr = HttpSessionManager()
+        outcome = _execute_session_materialize(step, bundle, session_mgr)
+        self.assertEqual(outcome.status, "ok")
+        obs = outcome.observations[0]
+        self.assertEqual(obs.payload["status_code"], 200)
+        self.assertTrue(obs.payload["csrf_prefetched"])
+        self.assertEqual(obs.payload["csrf_token_value"], "testcsrf123")
+        self.assertEqual(obs.payload["body_type"], "form")
+        self.assertTrue(any("csrf_session_ok" in c for c in obs.payload["cookies_obtained"]))
+
+    def test_csrf_meta_tag(self):
+        """CSRF token extracted from <meta> tag and injected as X-CSRFToken header."""
+        from attack_agent.runtime import _execute_session_materialize
+        metadata = {
+            "session_materialize": {
+                "login_url": f"{self.base_url}/csrf-meta-login",
+                "username": "admin",
+                "password": "pass",
+                "method": "POST",
+                "csrf_token": True,
+                "csrf_source": "meta",
+            }
+        }
+        bundle = _make_bundle(target=self.base_url, metadata=metadata)
+        step = PrimitiveActionStep(primitive="session-materialize", instruction="login",
+                                    parameters={"required_tags": []})
+        session_mgr = HttpSessionManager()
+        outcome = _execute_session_materialize(step, bundle, session_mgr)
+        self.assertEqual(outcome.status, "ok")
+        obs = outcome.observations[0]
+        self.assertEqual(obs.payload["status_code"], 200)
+        self.assertTrue(obs.payload["csrf_prefetched"])
+        self.assertEqual(obs.payload["csrf_token_value"], "metatoken456")
+
+    def test_csrf_response_header(self):
+        """CSRF token extracted from GET response header."""
+        from attack_agent.runtime import _execute_session_materialize
+        metadata = {
+            "session_materialize": {
+                "login_url": f"{self.base_url}/csrf-header-login",
+                "username": "admin",
+                "password": "pass",
+                "method": "POST",
+                "csrf_token": True,
+                "csrf_source": "header",
+            }
+        }
+        bundle = _make_bundle(target=self.base_url, metadata=metadata)
+        step = PrimitiveActionStep(primitive="session-materialize", instruction="login",
+                                    parameters={"required_tags": []})
+        session_mgr = HttpSessionManager()
+        outcome = _execute_session_materialize(step, bundle, session_mgr)
+        self.assertEqual(outcome.status, "ok")
+        obs = outcome.observations[0]
+        self.assertEqual(obs.payload["status_code"], 200)
+        self.assertTrue(obs.payload["csrf_prefetched"])
+        self.assertEqual(obs.payload["csrf_token_value"], "headertoken789")
+
+    def test_json_body_login(self):
+        """JSON body login with token persistence."""
+        from attack_agent.runtime import _execute_session_materialize
+        metadata = {
+            "session_materialize": {
+                "login_url": f"{self.base_url}/api/login",
+                "method": "POST",
+                "json": {"username": "admin", "password": "pass"},
+            }
+        }
+        bundle = _make_bundle(target=self.base_url, metadata=metadata)
+        step = PrimitiveActionStep(primitive="session-materialize", instruction="login",
+                                    parameters={"required_tags": []})
+        session_mgr = HttpSessionManager()
+        outcome = _execute_session_materialize(step, bundle, session_mgr)
+        self.assertEqual(outcome.status, "ok")
+        obs = outcome.observations[0]
+        self.assertEqual(obs.payload["status_code"], 200)
+        self.assertEqual(obs.payload["body_type"], "json")
+        # Token should be persisted in session_manager
+        auth_headers = session_mgr.get_auth_headers()
+        self.assertIn("Authorization", auth_headers)
+        self.assertEqual(auth_headers["Authorization"], "Bearer jwt_abc123")
+
+    def test_content_type_json_override(self):
+        """form_fields serialized as JSON when content_type='application/json'."""
+        from attack_agent.runtime import _execute_session_materialize
+        metadata = {
+            "session_materialize": {
+                "login_url": f"{self.base_url}/json-form-login",
+                "method": "POST",
+                "username": "admin",
+                "password": "pass",
+                "content_type": "application/json",
+            }
+        }
+        bundle = _make_bundle(target=self.base_url, metadata=metadata)
+        step = PrimitiveActionStep(primitive="session-materialize", instruction="login",
+                                    parameters={"required_tags": []})
+        session_mgr = HttpSessionManager()
+        outcome = _execute_session_materialize(step, bundle, session_mgr)
+        self.assertEqual(outcome.status, "ok")
+        obs = outcome.observations[0]
+        self.assertEqual(obs.payload["status_code"], 200)
+        self.assertEqual(obs.payload["body_type"], "json")
+
+    def test_auth_token_persistence(self):
+        """Authorization header from response persisted to session_manager."""
+        from attack_agent.runtime import _execute_session_materialize
+        metadata = {
+            "session_materialize": {
+                "login_url": f"{self.base_url}/auth-login",
+                "username": "admin",
+                "password": "pass",
+                "method": "POST",
+            }
+        }
+        bundle = _make_bundle(target=self.base_url, metadata=metadata)
+        step = PrimitiveActionStep(primitive="session-materialize", instruction="login",
+                                    parameters={"required_tags": []})
+        session_mgr = HttpSessionManager()
+        outcome = _execute_session_materialize(step, bundle, session_mgr)
+        self.assertEqual(outcome.status, "ok")
+        auth_headers = session_mgr.get_auth_headers()
+        self.assertIn("Authorization", auth_headers)
+        self.assertEqual(auth_headers["Authorization"], "Bearer auth_test_token")
+
+    def test_csrf_not_found_proceeds(self):
+        """CSRF prefetch on page with no CSRF token still proceeds."""
+        from attack_agent.runtime import _execute_session_materialize
+        metadata = {
+            "session_materialize": {
+                "login_url": f"{self.base_url}/no-csrf-page",
+                "username": "admin",
+                "password": "pass",
+                "method": "POST",
+                "csrf_token": True,
+            }
+        }
+        bundle = _make_bundle(target=self.base_url, metadata=metadata)
+        step = PrimitiveActionStep(primitive="session-materialize", instruction="login",
+                                    parameters={"required_tags": []})
+        session_mgr = HttpSessionManager()
+        outcome = _execute_session_materialize(step, bundle, session_mgr)
+        # Should not crash — POST will likely 404 but the point is no crash
+        self.assertNotEqual(outcome.status, None)
+        obs = outcome.observations[0] if outcome.observations else None
+        if obs:
+            self.assertFalse(obs.payload["csrf_prefetched"])
+            self.assertEqual(obs.payload["csrf_token_value"], "")
+
+    def test_backward_compat_form_only(self):
+        """Original form-only login still works unchanged."""
+        from attack_agent.runtime import _execute_session_materialize, PrimitiveAdapter, PrimitiveActionSpec
+        metadata = {
+            "session_materialize": {
+                "login_url": f"{self.base_url}/auth-login",
+                "username": "admin",
+                "password": "pass",
+                "method": "POST",
+            }
+        }
+        bundle = _make_bundle(target=self.base_url, metadata=metadata)
+        step = PrimitiveActionStep(primitive="session-materialize", instruction="login",
+                                    parameters={"required_tags": []})
+        session_mgr = HttpSessionManager()
+        outcome = _execute_session_materialize(step, bundle, session_mgr)
+        self.assertEqual(outcome.status, "ok")
+        obs = outcome.observations[0]
+        self.assertEqual(obs.payload["status_code"], 200)
+        self.assertEqual(obs.payload["body_type"], "form")
+        self.assertFalse(obs.payload["csrf_prefetched"])
 
 
 if __name__ == "__main__":

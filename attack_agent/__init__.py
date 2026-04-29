@@ -35,6 +35,18 @@ from .model_adapter import (
     is_available,
     TASK_PROMPTS,
 )
+from .browser_adapter import (
+    StdlibBrowserInspector,
+    PlaywrightBrowserInspector,
+    build_browser_inspector_from_config,
+    playwright_is_available,
+)
+from .http_adapter import (
+    StdlibHttpClient,
+    RequestsHttpClient,
+    build_http_client_from_config,
+    requests_is_available,
+)
 from .config import (
     AttackAgentConfig,
     PlatformConfig,
@@ -44,6 +56,8 @@ from .config import (
     MemoryConfig,
     LoggingConfig,
     ModelConfig,
+    BrowserConfig,
+    HttpConfig,
 )
 from .platform_models import PathType, PlanningContext, DualPathConfig, FreeExplorationPlanner, EmbeddingModel
 
@@ -75,6 +89,10 @@ __all__ = [
     "SentenceTransformerEmbeddingModel",
     "OpenAIEmbeddingModel",
     "build_embedding_from_config",
+    "StdlibBrowserInspector",
+    "PlaywrightBrowserInspector",
+    "build_browser_inspector_from_config",
+    "playwright_is_available",
     "OpenAIReasoningModel",
     "AnthropicReasoningModel",
     "build_model_from_config",
@@ -88,6 +106,12 @@ __all__ = [
     "MemoryConfig",
     "LoggingConfig",
     "ModelConfig",
+    "BrowserConfig",
+    "HttpConfig",
+    "StdlibHttpClient",
+    "RequestsHttpClient",
+    "build_http_client_from_config",
+    "requests_is_available",
     "PathType",
     "PlanningContext",
     "DualPathConfig",

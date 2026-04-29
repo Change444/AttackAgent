@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .apg import APGPlanner
-from .config import AttackAgentConfig
+from .config import AttackAgentConfig, BrowserConfig, HttpConfig
 from .constraint_aware_reasoner import ConstraintAwareReasoner, ConstraintContextBuilder
 from .constraints import LightweightSecurityShell, SecurityConstraints
 from .controller import Controller
@@ -30,7 +30,10 @@ class CompetitionPlatform:
         self.provider = provider
         self.state_graph = StateGraphService()
         self.controller = Controller(provider, self.state_graph)
-        self.runtime = WorkerRuntime()
+        self.runtime = WorkerRuntime(
+            browser_config=agent_config.browser if agent_config is not None else BrowserConfig(),
+            http_config=agent_config.http if agent_config is not None else HttpConfig(),
+        )
 
         # 从 AttackAgentConfig 提取策略阈值
         if agent_config is not None:

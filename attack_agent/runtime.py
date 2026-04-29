@@ -12,6 +12,7 @@ import tarfile
 from pathlib import Path
 from urllib import error, parse, request
 from dataclasses import dataclass, field
+from typing import Any
 
 from .apg import CodeSandbox
 from .models import new_id
@@ -52,6 +53,7 @@ def _clean_fail(primitive_name: str) -> ActionOutcome:
 class HttpSessionManager:
     cookie_jar: http.cookiejar.CookieJar = field(default_factory=http.cookiejar.CookieJar)
     max_redirects: int = 5
+    auth_headers: dict[str, str] = field(default_factory=dict)
 
     def build_opener(self) -> request.OpenerDirector:
         return request.build_opener(
@@ -62,16 +64,22 @@ class HttpSessionManager:
     def get_cookies_text(self) -> list[str]:
         return [f"{c.name}={c.value}" for c in self.cookie_jar]
 
+    def add_auth_header(self, name: str, value: str) -> None:
+        self.auth_headers[name] = value
+
+    def get_auth_headers(self) -> dict[str, str]:
+        return dict(self.auth_headers)
+
 
 @dataclass(slots=True)
 class PrimitiveAdapter:
     spec: PrimitiveActionSpec
 
-    def execute(self, step: PrimitiveActionStep, bundle: TaskBundle, sandbox: CodeSandbox, session_manager: HttpSessionManager | None = None) -> ActionOutcome:
+    def execute(self, step: PrimitiveActionStep, bundle: TaskBundle, sandbox: CodeSandbox, session_manager: HttpSessionManager | None = None, browser_inspector: Any | None = None, http_client: Any | None = None) -> ActionOutcome:
         if step.primitive == "http-request":
-            return _execute_http_request(step, bundle, session_manager)
+            return _execute_http_request(step, bundle, session_manager, http_client)
         if step.primitive == "browser-inspect":
-            return _execute_browser_inspect(step, bundle, session_manager)
+            return _execute_browser_inspect(step, bundle, session_manager, browser_inspector)
         if step.primitive == "session-materialize":
             return _execute_session_materialize(step, bundle, session_manager)
         if step.primitive == "structured-parse":
@@ -91,7 +99,7 @@ class PrimitiveAdapter:
 
 
 
-def _execute_http_request(step: PrimitiveActionStep, bundle: TaskBundle, session_manager: HttpSessionManager | None = None) -> ActionOutcome:
+def _execute_http_request(step: PrimitiveActionStep, bundle: TaskBundle, session_manager: HttpSessionManager | None = None, http_client: Any | None = None) -> ActionOutcome:
     request_specs = _resolve_http_request_specs(step, bundle)
     if not request_specs:
         return _clean_fail("http-request")
@@ -100,7 +108,7 @@ def _execute_http_request(step: PrimitiveActionStep, bundle: TaskBundle, session
     total_cost = float(bundle.instance.metadata.get("primitive_costs", {}).get("http-request", 1.0))
     for index, spec in enumerate(request_specs):
         try:
-            response_data = _perform_http_request(spec, bundle.target, session_manager)
+            response_data = _perform_http_request(spec, bundle.target, session_manager, http_client)
         except error.URLError as exc:
             return ActionOutcome(
                 status="failed",
@@ -124,6 +132,9 @@ def _execute_http_request(step: PrimitiveActionStep, bundle: TaskBundle, session
             "services": response_data["services"],
             "content_type": response_data["content_type"],
             "response_bytes": response_data["response_bytes"],
+            "auth_used": response_data.get("auth_used", "none"),
+            "ssl_verified": response_data.get("ssl_verified", True),
+            "uploaded_files": response_data.get("uploaded_files", []),
         }
         observations.append(
             Observation(
@@ -147,7 +158,7 @@ def _execute_http_request(step: PrimitiveActionStep, bundle: TaskBundle, session
     )
 
 
-def _execute_browser_inspect(step: PrimitiveActionStep, bundle: TaskBundle, session_manager: HttpSessionManager | None = None) -> ActionOutcome:
+def _execute_browser_inspect(step: PrimitiveActionStep, bundle: TaskBundle, session_manager: HttpSessionManager | None = None, browser_inspector: Any | None = None) -> ActionOutcome:
     inspect_specs = _resolve_browser_inspect_specs(step, bundle)
     if not inspect_specs:
         return _clean_fail("browser-inspect")
@@ -155,7 +166,10 @@ def _execute_browser_inspect(step: PrimitiveActionStep, bundle: TaskBundle, sess
     total_cost = float(bundle.instance.metadata.get("primitive_costs", {}).get("browser-inspect", 1.4))
     for index, spec in enumerate(inspect_specs):
         try:
-            page_data = _perform_browser_inspect(spec, bundle.target, session_manager)
+            if browser_inspector is not None:
+                page_data = browser_inspector.inspect_page(spec, bundle.target, session_manager)
+            else:
+                page_data = _perform_browser_inspect(spec, bundle.target, session_manager)
         except error.URLError as exc:
             return ActionOutcome(
                 status="failed",
@@ -184,6 +198,10 @@ def _execute_browser_inspect(step: PrimitiveActionStep, bundle: TaskBundle, sess
                     "forms": page_data.get("forms", []),
                     "content_type": page_data["content_type"],
                     "response_bytes": page_data["response_bytes"],
+                    "scripts": page_data.get("scripts", []),
+                    "js_rendered_text": page_data.get("js_rendered_text", ""),
+                    "console_messages": page_data.get("console_messages", []),
+                    "cookies": page_data.get("cookies", []),
                 },
                 confidence=float(spec.get("confidence", 0.82)),
                 novelty=float(spec.get("novelty", 0.68)),
@@ -237,9 +255,15 @@ def _execute_artifact_scan(step: PrimitiveActionStep, bundle: TaskBundle, sessio
         return _clean_fail("artifact-scan")
     observations: list[Observation] = []
     artifacts: list[Artifact] = []
+    temp_dirs: list[tempfile.TemporaryDirectory] = []
     total_cost = float(bundle.instance.metadata.get("primitive_costs", {}).get("artifact-scan", 1.2))
     for index, spec in enumerate(inspect_specs):
-        artifact_data = _perform_artifact_scan(spec, bundle.target, session_manager)
+        try:
+            artifact_data, td = _perform_artifact_scan(spec, bundle.target, session_manager)
+        except (ValueError, OSError):
+            continue
+        if td is not None:
+            temp_dirs.append(td)
         observation_id = str(spec.get("id") or f"artifact-scan-{bundle.action_program.id}-{index}")
         if observation_id in bundle.known_observation_ids:
             continue
@@ -254,6 +278,12 @@ def _execute_artifact_scan(step: PrimitiveActionStep, bundle: TaskBundle, sessio
                 novelty=float(spec.get("novelty", 0.64)),
             )
         )
+    # Cleanup temp dirs after all specs are processed
+    for td in temp_dirs:
+        try:
+            td.cleanup()
+        except OSError:
+            pass
     novelty = sum(observation.novelty for observation in observations)
     return ActionOutcome(
         status="ok" if observations else "failed",
@@ -301,6 +331,11 @@ def _resolve_http_request_specs(step: PrimitiveActionStep, bundle: TaskBundle) -
             "body": raw_config.get("body"),
             "json": raw_config.get("json"),
             "timeout": raw_config.get("timeout"),
+            "auth": raw_config.get("auth"),
+            "auth_type": raw_config.get("auth_type"),
+            "auth_token": raw_config.get("auth_token"),
+            "files": raw_config.get("files"),
+            "verify_ssl": raw_config.get("verify_ssl"),
         }.items() if value is not None}
         raw_requests = raw_config.get("requests")
         if isinstance(raw_requests, list):
@@ -454,7 +489,9 @@ def _resolve_binary_inspect_specs(step: PrimitiveActionStep, bundle: TaskBundle)
     return resolved
 
 
-def _perform_http_request(spec: dict[str, object], default_target: str, session_manager: HttpSessionManager | None = None) -> dict[str, object]:
+def _perform_http_request(spec: dict[str, object], default_target: str, session_manager: HttpSessionManager | None = None, http_client: Any | None = None) -> dict[str, object]:
+    if http_client is not None:
+        return http_client.perform_request(spec, default_target, session_manager)
     base_url = str(spec.get("url") or default_target)
     path = str(spec.get("path", "") or "")
     final_url = parse.urljoin(base_url if base_url.endswith("/") else f"{base_url}/", path.lstrip("/")) if path else base_url
@@ -468,6 +505,11 @@ def _perform_http_request(spec: dict[str, object], default_target: str, session_
     req = request.Request(final_url, data=body, method=method)
     for key, value in dict(spec.get("headers", {}) or {}).items():
         req.add_header(str(key), str(value))
+    # Inject auth headers from session_manager
+    if session_manager is not None:
+        for name, value in session_manager.get_auth_headers().items():
+            if not req.has_header(name):
+                req.add_header(name, value)
     if body is not None:
         if "json" in spec and not req.has_header("Content-Type"):
             req.add_header("Content-Type", "application/json")
@@ -508,10 +550,13 @@ def _perform_http_request(spec: dict[str, object], default_target: str, session_
         "services": [{"name": parsed_url.scheme or "http", "port": parsed_url.port or (443 if parsed_url.scheme == "https" else 80)}],
         "content_type": headers.get("Content-Type", ""),
         "response_bytes": len(raw_body),
+        "auth_used": "none",
+        "ssl_verified": True,
+        "uploaded_files": [],
     }
 
 
-def _perform_browser_inspect(spec: dict[str, object], default_target: str, session_manager: HttpSessionManager | None = None) -> dict[str, object]:
+def _perform_browser_inspect(spec: dict[str, object], default_target: str, session_manager: HttpSessionManager | None = None, extract_scripts: bool = False) -> dict[str, object]:
     base_url = str(spec.get("url") or default_target)
     path = str(spec.get("path", "") or "")
     final_url = parse.urljoin(base_url if base_url.endswith("/") else f"{base_url}/", path.lstrip("/")) if path else base_url
@@ -531,7 +576,7 @@ def _perform_browser_inspect(spec: dict[str, object], default_target: str, sessi
         headers = dict(exc.headers.items())
     encoding = _infer_http_encoding(headers, raw_body)
     html = raw_body.decode(encoding, errors="replace")
-    parsed = _parse_html_page(html, final_url)
+    parsed = _parse_html_page(html, final_url, extract_scripts=extract_scripts)
     return {
         "url": final_url,
         "status_code": status_code,
@@ -544,10 +589,14 @@ def _perform_browser_inspect(spec: dict[str, object], default_target: str, sessi
         "forms": parsed["forms"],
         "content_type": headers.get("Content-Type", ""),
         "response_bytes": len(raw_body),
+        "scripts": parsed.get("scripts", []),
+        "js_rendered_text": "",
+        "console_messages": [],
+        "cookies": [],
     }
 
 
-def _perform_artifact_scan(spec: dict[str, object], default_target: str, session_manager: HttpSessionManager | None = None) -> dict[str, object]:
+def _perform_artifact_scan(spec: dict[str, object], default_target: str, session_manager: HttpSessionManager | None = None) -> tuple[dict[str, object], tempfile.TemporaryDirectory | None]:
     target = str(spec.get("url") or spec.get("path") or default_target)
     parsed = parse.urlparse(target)
     resolved_path: Path | None = None
@@ -567,18 +616,18 @@ def _perform_artifact_scan(spec: dict[str, object], default_target: str, session
         "size_bytes": len(raw_bytes),
         "suffix": resolved_path.suffix.lower(),
         "sha1": hashlib.sha1(raw_bytes).hexdigest(),
+        "content_type": _guess_content_type(resolved_path.name),
     }
-    preview = _extract_text_preview(raw_bytes, int(spec.get("preview_bytes") or 64))
+    preview_bytes_val = int(spec.get("preview_bytes") or 512)
+    preview = _extract_text_preview(raw_bytes, preview_bytes_val)
     if preview:
         payload["text_preview"] = preview
     max_depth = max(1, int(spec.get("max_depth") or 1))
     max_members = max(1, int(spec.get("max_members") or 20))
-    archive_members = _extract_archive_members(resolved_path, max_depth, max_members)
+    archive_members = _extract_archive_members(resolved_path, max_depth, max_members, preview_bytes_val)
     if archive_members:
         payload["archive_members"] = archive_members
-    if temp_dir:
-        temp_dir.cleanup()
-    return payload
+    return payload, temp_dir
 
 
 def _download_artifact(url: str, dest_dir: Path, session_manager: HttpSessionManager | None = None) -> Path:
@@ -590,25 +639,76 @@ def _download_artifact(url: str, dest_dir: Path, session_manager: HttpSessionMan
     return dest_path
 
 
-def _extract_archive_members(path: Path, max_depth: int, max_members: int) -> list[dict[str, object]] | None:
+def _guess_content_type(name: str) -> str:
+    ext = Path(name).suffix.lower()
+    types = {
+        ".txt": "text/plain", ".html": "text/html", ".htm": "text/html",
+        ".json": "application/json", ".xml": "application/xml", ".csv": "text/csv",
+        ".py": "text/x-python", ".js": "text/javascript", ".sh": "text/x-shellscript",
+        ".md": "text/markdown", ".yaml": "text/yaml", ".yml": "text/yaml",
+        ".cfg": "text/plain", ".ini": "text/plain", ".conf": "text/plain",
+        ".log": "text/plain", ".env": "text/plain",
+        ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".gif": "image/gif", ".svg": "image/svg+xml", ".ico": "image/x-icon",
+        ".pdf": "application/pdf", ".pcap": "application/vnd.tcpdump.pcap",
+        ".zip": "application/zip", ".gz": "application/gzip",
+        ".exe": "application/x-msdownload", ".elf": "application/x-elf",
+    }
+    return types.get(ext, "application/octet-stream")
+
+
+def _extract_archive_members(path: Path, max_depth: int, max_members: int, preview_bytes: int = 512) -> list[dict[str, object]] | None:
     suffix = path.suffix.lower()
+    # Also handle .tar.gz / .tar.bz2 compound suffixes
+    stem = path.stem.lower()
+    compound_suffix = f".tar{suffix}" if suffix in {".gz", ".bz2"} and stem.endswith(".tar") else suffix
+    effective_suffix = compound_suffix if compound_suffix in {".tar.gz", ".tar.bz2"} else suffix
+
     members: list[dict[str, object]] = []
-    if suffix == ".zip":
+    if effective_suffix == ".zip":
         try:
             with zipfile.ZipFile(path) as zf:
                 for info in zf.infolist()[:max_members]:
                     if info.is_dir():
                         continue
-                    members.append({"name": info.filename, "size_bytes": info.file_size, "compressed_size": info.compress_size})
+                    entry: dict[str, object] = {
+                        "name": info.filename,
+                        "size_bytes": info.file_size,
+                        "compressed_size": info.compress_size,
+                        "content_type": _guess_content_type(info.filename),
+                    }
+                    try:
+                        raw = zf.read(info.filename)
+                        preview = _extract_text_preview(raw, preview_bytes)
+                        if preview:
+                            entry["content_preview"] = preview
+                    except (RuntimeError, zipfile.BadZipFile, KeyError):
+                        pass
+                    members.append(entry)
         except zipfile.BadZipFile:
             return None
-    elif suffix in {".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2"}:
+    elif effective_suffix in {".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2"}:
         try:
             with tarfile.open(path) as tf:
                 for member in tf.getmembers()[:max_members]:
                     if not member.isfile():
                         continue
-                    members.append({"name": member.name, "size_bytes": member.size})
+                    entry: dict[str, object] = {
+                        "name": member.name,
+                        "size_bytes": member.size,
+                        "content_type": _guess_content_type(member.name),
+                    }
+                    try:
+                        f = tf.extractfile(member)
+                        if f is not None:
+                            raw = f.read(preview_bytes + 1)
+                            preview = _extract_text_preview(raw, preview_bytes)
+                            if preview:
+                                entry["content_preview"] = preview
+                            f.close()
+                    except (tarfile.TarError, OSError):
+                        pass
+                    members.append(entry)
         except tarfile.TarError:
             return None
     else:
@@ -710,7 +810,7 @@ class _HTMLPageParser(html.parser.HTMLParser):
     _SKIP_TAGS = frozenset({"script", "style"})
     _NODE_TAGS = frozenset({"main", "section", "article", "div"})
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, extract_scripts: bool = False) -> None:
         super().__init__()
         self.base_url = base_url
         self.title = ""
@@ -725,9 +825,22 @@ class _HTMLPageParser(html.parser.HTMLParser):
         self.forms: list[dict[str, object]] = []
         self._current_form: dict[str, object] | None = None
         self._form_inputs: list[str] = []
+        self._extract_scripts = extract_scripts
+        self.scripts: list[dict[str, str]] = []
+        self._current_script_index: int = -1
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attr_dict = {k: (v or "") for k, v in attrs}
+        if tag == "script" and self._extract_scripts:
+            self.scripts.append({
+                "src": attr_dict.get("src", ""),
+                "type": attr_dict.get("type", ""),
+                "inline": "",
+            })
+            self._current_script_index = len(self.scripts) - 1
+            self._skip_depth += 1
+            self._skip_tag = tag
+            return
         if tag in self._SKIP_TAGS:
             self._skip_depth += 1
             self._skip_tag = tag
@@ -755,6 +868,8 @@ class _HTMLPageParser(html.parser.HTMLParser):
     def handle_endtag(self, tag: str) -> None:
         if self._skip_depth > 0 and tag == self._skip_tag:
             self._skip_depth -= 1
+            if self._current_script_index >= 0:
+                self._current_script_index = -1
             self._skip_tag = ""
             return
         if tag == "title":
@@ -768,6 +883,9 @@ class _HTMLPageParser(html.parser.HTMLParser):
             self._form_inputs = []
 
     def handle_data(self, data: str) -> None:
+        if self._skip_depth > 0 and self._current_script_index >= 0:
+            self.scripts[self._current_script_index]["inline"] += data
+            return
         if self._skip_depth > 0:
             return
         if self._in_title:
@@ -786,8 +904,8 @@ class _HTMLPageParser(html.parser.HTMLParser):
         return " ".join(self._text_parts)
 
 
-def _parse_html_page(html: str, base_url: str) -> dict[str, object]:
-    parser = _HTMLPageParser(base_url)
+def _parse_html_page(html: str, base_url: str, extract_scripts: bool = False) -> dict[str, object]:
+    parser = _HTMLPageParser(base_url, extract_scripts=extract_scripts)
     try:
         parser.feed(html)
     except html.parser.HTMLParseError:
@@ -799,7 +917,54 @@ def _parse_html_page(html: str, base_url: str) -> dict[str, object]:
         "nodes": parser.nodes or _extract_rendered_nodes(html),
         "links": parser.links,
         "forms": parser.forms or _extract_forms(html, base_url),
+        "scripts": parser.scripts,
     }
+
+
+_COMMON_CSRF_NAMES = ("csrfmiddlewaretoken", "csrf_token", "csrf-token", "_token", "authenticity_token", "X-CSRFToken")
+
+
+class _CSRFTokenParser(html.parser.HTMLParser):
+    """Extract CSRF token from HTML hidden inputs and meta tags."""
+
+    def __init__(self, target_names: tuple[str, ...] = _COMMON_CSRF_NAMES,
+                 search_meta: bool = True, search_form: bool = True) -> None:
+        super().__init__()
+        self._target_names = target_names
+        self._search_meta = search_meta
+        self._search_form = search_form
+        self._token: str | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_dict = {k: (v or "") for k, v in attrs}
+        if self._search_form and tag == "input":
+            if attr_dict.get("type", "").lower() == "hidden" and attr_dict.get("name") in self._target_names:
+                value = attr_dict.get("value", "")
+                if value and self._token is None:
+                    self._token = value
+        if self._search_meta and tag == "meta":
+            if attr_dict.get("name") in self._target_names:
+                content = attr_dict.get("content", "")
+                if content and self._token is None:
+                    self._token = content
+
+    def get_token(self) -> str | None:
+        return self._token
+
+
+def _extract_csrf_token(html_text: str, csrf_field: str, csrf_source: str) -> str | None:
+    target_names = (csrf_field,) if csrf_field else _COMMON_CSRF_NAMES
+    search_meta = csrf_source in ("meta", "form")  # meta mode or auto-detect
+    search_form = csrf_source in ("form",) or (csrf_source == "meta" and not csrf_field)
+    if csrf_source == "meta":
+        search_form = False
+        search_meta = True
+    parser = _CSRFTokenParser(target_names, search_meta=search_meta, search_form=search_form)
+    try:
+        parser.feed(html_text)
+    except html.parser.HTMLParseError:
+        pass
+    return parser.get_token()
 
 
 def _execute_session_materialize(step: PrimitiveActionStep, bundle: TaskBundle, session_manager: HttpSessionManager | None = None) -> ActionOutcome:
@@ -817,12 +982,69 @@ def _execute_session_materialize(step: PrimitiveActionStep, bundle: TaskBundle, 
         if username and password:
             form_fields.setdefault("username", username)
             form_fields.setdefault("password", password)
-        body = parse.urlencode({str(k): str(v) for k, v in form_fields.items()}).encode("utf-8")
-        req = request.Request(login_url, data=body, method=method)
-        req.add_header("Content-Type", "application/x-www-form-urlencoded")
+        timeout = float(spec.get("timeout") or 5.0)
+        json_payload = spec.get("json")
+        content_type_override = spec.get("content_type")
+        body_type = "form"
+
+        # --- CSRF prefetch ---
+        csrf_token_value: str | None = None
+        csrf_config = spec.get("csrf_token")
+        if csrf_config:
+            csrf_field = str(spec.get("csrf_field") or (csrf_config if isinstance(csrf_config, str) else ""))
+            csrf_source = str(spec.get("csrf_source") or "form")
+            prefetch_opener = session_manager.build_opener() if session_manager else request.build_opener()
+            prefetch_headers_dict: dict[str, str] = {}
+            prefetch_html = ""
+            try:
+                prefetch_req = request.Request(login_url, method="GET")
+                for key, value in dict(spec.get("headers", {}) or {}).items():
+                    prefetch_req.add_header(str(key), str(value))
+                with prefetch_opener.open(prefetch_req, timeout=timeout) as prefetch_resp:
+                    prefetch_headers_dict = dict(prefetch_resp.headers.items())
+                    prefetch_html = prefetch_resp.read().decode("utf-8", errors="replace")
+            except (error.HTTPError, error.URLError):
+                pass
+            if csrf_source == "header":
+                for header_name in ("X-CSRFToken", "X-CSRF-Token", "Csrf-Token"):
+                    token = prefetch_headers_dict.get(header_name)
+                    if token:
+                        csrf_token_value = token
+                        break
+            else:
+                csrf_token_value = _extract_csrf_token(prefetch_html, csrf_field, csrf_source)
+            # Inject CSRF token
+            if csrf_token_value:
+                if csrf_source == "form":
+                    field_name = csrf_field or "csrfmiddlewaretoken"
+                    form_fields[field_name] = csrf_token_value
+                else:
+                    spec_headers = dict(spec.get("headers", {}) or {})
+                    spec_headers["X-CSRFToken"] = csrf_token_value
+                    spec["headers"] = spec_headers
+
+        # --- Body encoding ---
+        if json_payload and isinstance(json_payload, dict):
+            body = json.dumps({str(k): str(v) for k, v in json_payload.items()}, ensure_ascii=True).encode("utf-8")
+            req = request.Request(login_url, data=body, method=method)
+            req.add_header("Content-Type", content_type_override or "application/json")
+            body_type = "json"
+        elif content_type_override == "application/json" and form_fields:
+            body = json.dumps({str(k): str(v) for k, v in form_fields.items()}, ensure_ascii=True).encode("utf-8")
+            req = request.Request(login_url, data=body, method=method)
+            req.add_header("Content-Type", "application/json")
+            body_type = "json"
+        else:
+            body = parse.urlencode({str(k): str(v) for k, v in form_fields.items()}).encode("utf-8")
+            req = request.Request(login_url, data=body, method=method)
+            req.add_header("Content-Type", "application/x-www-form-urlencoded")
         for key, value in dict(spec.get("headers", {}) or {}).items():
             req.add_header(str(key), str(value))
-        timeout = float(spec.get("timeout") or 5.0)
+        # Inject session auth headers
+        if session_manager:
+            for name, value in session_manager.get_auth_headers().items():
+                if name not in req.headers:
+                    req.add_header(name, value)
         opener = session_manager.build_opener() if session_manager else request.build_opener()
         try:
             with opener.open(req, timeout=timeout) as response:
@@ -840,6 +1062,21 @@ def _execute_session_materialize(step: PrimitiveActionStep, bundle: TaskBundle, 
             cookies_obtained = session_manager.get_cookies_text()
         else:
             cookies_obtained = _extract_cookies(resp_headers)
+
+        # --- Persist auth tokens to session_manager ---
+        if session_manager:
+            auth_header_value = resp_headers.get("Authorization", "")
+            if auth_header_value:
+                session_manager.add_auth_header("Authorization", auth_header_value)
+            if body_type == "json":
+                try:
+                    resp_json = json.loads(resp_body.decode("utf-8", errors="replace"))
+                    token_value = resp_json.get("token") or resp_json.get("access_token") or resp_json.get("auth_token")
+                    if token_value and isinstance(token_value, str):
+                        session_manager.add_auth_header("Authorization", f"Bearer {token_value}")
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass
+
         observation_id = str(spec.get("id") or f"session-materialize-{bundle.action_program.id}-{index}")
         if observation_id in bundle.known_observation_ids:
             continue
@@ -855,6 +1092,9 @@ def _execute_session_materialize(step: PrimitiveActionStep, bundle: TaskBundle, 
                     "status_code": status_code,
                     "cookies_obtained": cookies_obtained,
                     "auth_token": resp_headers.get("Authorization", ""),
+                    "csrf_prefetched": csrf_token_value is not None,
+                    "csrf_token_value": csrf_token_value or "",
+                    "body_type": body_type,
                     "session_type": "cookie" if cookies_obtained else ("token" if resp_headers.get("Authorization") else "unknown"),
                     "valid": status_code in (200, 301, 302),
                 },
@@ -1201,7 +1441,7 @@ def _extract_printable_strings(raw_bytes: bytes, min_length: int, max_strings: i
 
 
 def _extract_text_preview(raw_bytes: bytes, preview_bytes: int) -> str:
-    limit = max(0, min(preview_bytes, 128))
+    limit = max(0, min(preview_bytes, 4096))
     if not raw_bytes or limit == 0:
         return ""
     sample = raw_bytes[:limit]
@@ -1313,17 +1553,21 @@ class PrimitiveRegistry:
         specs = [
             PrimitiveActionSpec("http-request", "network/http",
                 {"method": "str(GET/POST等)", "path": "str", "url": "str", "headers": "dict",
-                 "json": "dict", "form": "dict", "query": "dict", "timeout": "float"},
+                 "json": "dict", "form": "dict", "query": "dict", "timeout": "float",
+                 "auth": "dict(username/password)", "auth_type": "str(basic/bearer)",
+                 "auth_token": "str", "files": "dict(field:path)", "verify_ssl": "bool"},
                 {"observations": "list"}, 1.0, "low"),
             PrimitiveActionSpec("browser-inspect", "browser/dom",
                 {"path": "str", "url": "str", "headers": "dict", "timeout": "float"},
                 {"observations": "list"}, 1.4, "medium"),
             PrimitiveActionSpec("session-materialize", "session/state",
                 {"login_url": "str", "method": "str", "form_fields": "dict",
-                 "username": "str", "password": "str", "headers": "dict"},
+                 "username": "str", "password": "str", "headers": "dict",
+                 "json": "dict", "content_type": "str",
+                 "csrf_token": "str|bool", "csrf_field": "str", "csrf_source": "str"},
                 {"observations": "list"}, 1.1, "medium"),
             PrimitiveActionSpec("artifact-scan", "artifact/fs",
-                {"path": "str", "url": "str", "location": "str", "preview_bytes": "int"},
+                {"path": "str", "url": "str", "location": "str", "preview_bytes": "int", "max_depth": "int", "max_members": "int"},
                 {"artifacts": "list"}, 1.2, "low"),
             PrimitiveActionSpec("structured-parse", "text/parse",
                 {"parse_source": "str(observation_id)", "format": "str(json/html/headers)", "extract_fields": "list"},
@@ -1361,32 +1605,42 @@ class WorkspaceManager:
 
 
 class WorkerRuntime:
-    def __init__(self) -> None:
+    def __init__(self, browser_config: Any | None = None, http_config: Any | None = None) -> None:
         self.registry = PrimitiveRegistry()
         self.workspace = WorkspaceManager()
         self.sandbox = CodeSandbox()
+        self._browser_config = browser_config
+        self._http_config = http_config
 
     def run_task(self, task_bundle: TaskBundle) -> tuple[list[Event], ActionOutcome]:
         session_manager = HttpSessionManager()
+        from .browser_adapter import build_browser_inspector_from_config
+        browser_inspector = build_browser_inspector_from_config(self._browser_config)
+        from .http_adapter import build_http_client_from_config
+        http_client = build_http_client_from_config(self._http_config)
         aggregate = ActionOutcome(status="failed", failure_reason="no_steps")
         events: list[Event] = []
-        for step in task_bundle.action_program.steps:
-            if step.primitive not in task_bundle.visible_primitives:
-                continue
-            outcome = self.registry.adapters[step.primitive].execute(step, task_bundle, self.sandbox, session_manager)
-            aggregate.observations.extend(outcome.observations)
-            aggregate.artifacts.extend(outcome.artifacts)
-            aggregate.derived_hypotheses.extend(outcome.derived_hypotheses)
-            aggregate.candidate_flags.extend(outcome.candidate_flags)
-            aggregate.cost += outcome.cost
-            aggregate.novelty += outcome.novelty
-            if outcome.status == "ok":
-                aggregate.status = "ok"
-                aggregate.failure_reason = None
-            elif aggregate.failure_reason is None:
-                aggregate.failure_reason = outcome.failure_reason
-            for obs in outcome.observations:
-                task_bundle.completed_observations[obs.id] = obs
+        try:
+            for step in task_bundle.action_program.steps:
+                if step.primitive not in task_bundle.visible_primitives:
+                    continue
+                outcome = self.registry.adapters[step.primitive].execute(step, task_bundle, self.sandbox, session_manager, browser_inspector, http_client)
+                aggregate.observations.extend(outcome.observations)
+                aggregate.artifacts.extend(outcome.artifacts)
+                aggregate.derived_hypotheses.extend(outcome.derived_hypotheses)
+                aggregate.candidate_flags.extend(outcome.candidate_flags)
+                aggregate.cost += outcome.cost
+                aggregate.novelty += outcome.novelty
+                if outcome.status == "ok":
+                    aggregate.status = "ok"
+                    aggregate.failure_reason = None
+                elif aggregate.failure_reason is None:
+                    aggregate.failure_reason = outcome.failure_reason
+                for obs in outcome.observations:
+                    task_bundle.completed_observations[obs.id] = obs
+        finally:
+            browser_inspector.close()
+            http_client.close()
         for observation in aggregate.observations:
             events.append(
                 Event(

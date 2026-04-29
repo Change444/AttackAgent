@@ -9,6 +9,11 @@
 
 | 版本 | 日期 | 变更说明 |
 |------|------|----------|
+| 3.13 | 2026-04-29 | Phase 2 R8 code-sandbox 放宽：_SafeAstValidator 移除 ClassDef/With/Raise 禁止(添加 visit_ClassDef 跟踪类名), SAFE_IMPORTS 加入 zlib/csv(9→11), SAFE_BUILTINS 加入 __build_class__, globals_scope 加入 __name__, ConstraintAwareReasoner 更新 code-sandbox 描述, 测试新增 class/with/raise/zlib/csv 5 项, 297 测试通过 |
+| 3.12 | 2026-04-29 | Phase 2 R7 artifact-scan 提取 ZIP/tar 内容 + 增大预览：_extract_archive_members 添加 content_preview(ZIP/tar 成员文本内容) + content_type(_guess_content_type 扩展名映射), _extract_text_preview 上限 128→4096 默认 64→512, _perform_artifact_scan 返回 (payload, temp_dir) 元组延迟清理, _execute_artifact_scan 批量清理 temp_dirs, Observation payload 新增 content_type 字段, PrimitiveRegistry + ConstraintAwareReasoner 新增 max_depth/max_members 参数, 292 测试全通过 |
+| 3.11 | 2026-04-29 | Phase 2 R6 session-materialize CSRF 预取 + JSON body：_CSRFTokenParser(HTML hidden input + meta tag 解析), _extract_csrf_token(csrf_field/csrf_source 自动检测), _execute_session_materialize CSRF GET 预取(form/meta/header 3 来源) + JSON body 登录(json/content_type spec 字段) + auth token 持久化回写 session_manager.add_auth_header(), Observation payload 新增 csrf_prefetched/csrf_token_value/body_type 字段, PrimitiveRegistry + ConstraintAwareReasoner 新字段, 284 测试全通过 |
+| 3.10 | 2026-04-29 | Phase 2 R5 http-request 接 requests：HttpConfig(engine/verify_ssl/max_redirects/timeout_seconds), RequestsHttpClient(multipart + Basic Auth + Bearer Auth + SSL bypass), StdlibHttpClient(graceful fallback), HttpSessionManager.auth_headers 持久化, _resolve_http_request_specs 新增 auth/auth_type/auth_token/files/verify_ssl 字段, Observation payload 新增 auth_used/ssl_verified/uploaded_files 字段, WorkerRuntime 接 http_config, 276 测试全通过 |
+| 3.9 | 2026-04-28 | Phase 2 R4 browser-inspect 接 Playwright：BrowserConfig(engine/headless/browser_type/timeout/wait_for_selector/extract_scripts), PlaywrightBrowserInspector(JS 渲染 + script 读取 + console + cookies), StdlibBrowserInspector(graceful fallback), _HTMLPageParser extract_scripts 模式, Observation payload 新增 scripts/js_rendered_text/console_messages/cookies 字段, WorkerRuntime 接 browser_config, 252 测试全通过 |
 | 3.5 | 2026-04-28 | P2 启发式自由探索 + 模式回注 + Embedding 接入：HeuristicFreeExplorationPlanner, FreeExplorationPlanner Protocol, PatternInjector + PatternLibrary 动态族, EmbeddingModel Protocol + adapters, InMemoryVectorStore cosine similarity, TF-IDF 修正, CJK tokenize, SemanticRetrievalConfig wiring |
 | 3.6 | 2026-04-28 | Phase 1 R1 参数调优：stagnation_threshold 3→8 可配置, flag_confidence_threshold 0.85→0.6 可配置, StrategyLayer/SubmitClassifier 构造参数化, CLI override 支持 |
 | 3.7 | 2026-04-28 | Phase 1 R2 CTFd 适配器：CTFdCompetitionProvider (session auth + API token), 6 方法 Protocol 实现, CLI --ctfd-url/--ctfd-username/--ctfd-password/--ctfd-token |
@@ -37,6 +42,11 @@
 | M8 | Phase 1 R1 参数调优 | 2026-04-28 |
 | M9 | Phase 1 R2 CTFd 适配器 | 2026-04-28 |
 | M10 | Phase 1 R3 删除假数据路径 | 2026-04-28 |
+| M11 | Phase 2 R4 browser-inspect 接 Playwright | 2026-04-28 |
+| M12 | Phase 2 R5 http-request 接 requests | 2026-04-29 |
+| M13 | Phase 2 R6 session-materialize CSRF + JSON body | 2026-04-29 |
+| M14 | Phase 2 R7 artifact-scan ZIP/tar 内容提取 + 增大预览 | 2026-04-29 |
+| M15 | Phase 2 R8 code-sandbox 放宽 class/with/raise + zlib/csv | 2026-04-29 |
 
 ---
 
@@ -57,6 +67,11 @@
 | P0 | 参数调优（stagnation/confidence 可配置） | 0.5 天 | 2026-04-28 |
 | P0 | CTFd Provider 适配器（session auth + API token） | 3 天 | 2026-04-28 |
 | P0 | 删除 _consume_metadata 假数据路径（原语真执行或干净失败） | 1.5 天 | 2026-04-28 |
+| P1 | browser-inspect 接 Playwright（JS 渲染 + script 读取） | 2 天 | 2026-04-28 |
+| P1 | http-request 接 requests（multipart + Basic Auth + SSL bypass） | 1 天 | 2026-04-29 |
+| P1 | session-materialize CSRF 预取 + JSON body（CSRF 3 来源 + JSON 登录 + auth 持久化） | 1 天 | 2026-04-29 |
+| P1 | artifact-scan 提取 ZIP/tar 内容 + 保留临时文件 + 增大预览（content_preview + content_type + 预览 512→4096） | 0.5 天 | 2026-04-29 |
+| P1 | code-sandbox 放宽（class/with/raise 允许 + zlib/csv 导入） | 0.5 天 | 2026-04-29 |
 
 ---
 
@@ -75,6 +90,11 @@
 | 停滞阈值/提交置信度硬编码 | v3.6 | StrategyLayer 构造参数化, stagnation_threshold→8, confidence_threshold→0.6, PlatformConfig 可配置 |
 | 无 CTFd 靶场适配器 | v3.7 | CTFdCompetitionProvider 实现 6 方法 Protocol, session auth + API token, CLI --ctfd-* 参数 |
 | 原语假数据回退掩盖能力不足 | v3.8 | _consume_metadata 删除, 10 个调用点改为 _clean_fail 干净失败, _extract_candidates 不再读取 primitive_payloads, runtime.py 精简 127 行 |
+| browser-inspect 不执行 JS 且丢弃 `<script>` 标签内容 | v3.9 | PlaywrightBrowserInspector(JS 渲染 + script 读取 + console + cookies), StdlibBrowserInspector(graceful fallback), _HTMLPageParser extract_scripts 模式, BrowserConfig(engine/headless/browser_type/timeout/wait_for_selector/extract_scripts) |
+| http-request 无 multipart 文件上传、无 HTTP Basic Auth、无 SSL 自签名证书支持 | v3.10 | RequestsHttpClient(multipart + Basic Auth + Bearer Auth + SSL bypass), StdlibHttpClient(graceful fallback), HttpSessionManager.auth_headers 持久化, HttpConfig(engine/verify_ssl/max_redirects/timeout_seconds) |
+| session-materialize 仅 form POST 登录（CSRF/JSON body 部分） | v3.11 | _CSRFTokenParser + _extract_csrf_token(CSRF 3 来源), JSON body 登录(json/content_type), auth token 持久化回写 session_manager.add_auth_header(), Observation payload csrf_prefetched/csrf_token_value/body_type |
+| artifact-scan 不提取 ZIP/tar 内容（仅列文件名），预览仅 64 字节，下载后立即清理临时文件 | v3.12 | _extract_archive_members 添加 content_preview(ZIP/tar 成员文本预览) + content_type(_guess_content_type 扩展名→MIME 映射), _extract_text_preview 上限 128→4096 默认 64→512, _perform_artifact_scan 返回 (payload, temp_dir) 元组延迟清理, Observation payload 新增 content_type 字段 |
+| code-sandbox 禁止 class/with/raise，缺少 zlib/csv 解码库 | v3.13 | _SafeAstValidator 移除 ClassDef/With/Raise 禁止 + visit_ClassDef 跟踪类名, SAFE_IMPORTS 加入 zlib/csv, SAFE_BUILTINS 加入 __build_class__, globals_scope 加入 __name__, class/with/raise 可用 |
 
 ---
 
@@ -87,10 +107,10 @@
 | # | 问题 | 影响范围 | 严重度 |
 |---|------|----------|--------|
 | E1 | browser-inspect 不执行 JS 且丢弃 `<script>` 标签内容 | 所有 JS 渲染页面、XSS 发现、DOM 操纵类 web 题（约 40% CTF） | 致命 |
-| E2 | http-request 无 multipart 文件上传、无 HTTP Basic Auth、无 SSL 自签名证书支持 | 文件上传题、Basic Auth 保护页面、HTTPS 自签名靶场 | 致命 |
-| E3 | session-materialize 仅 form POST 登录，无 CSRF token 预取、无 JSON body 登录、无多步认证 | Django/Flask-WTF 等 CSRF 站点、API 登录、2FA | 致命 |
-| E4 | code-sandbox 禁止 class/lambda/with/raise，无 crypto 库 | RSA/AES/ECC 类密码题、复杂算法 | 高 |
-| E5 | artifact-scan 不提取 ZIP/tar 内容（仅列文件名），预览仅 64 字节，下载后立即清理临时文件 | Forensics 取证题、需要多步分析的文件题 | 高 |
+| E2 | ~~http-request 无 multipart 文件上传、无 HTTP Basic Auth、无 SSL 自签名证书支持~~ → 已解决 | ~~文件上传题、Basic Auth 保护页面、HTTPS 自签名靶场~~ → v3.10 RequestsHttpClient(multipart + Basic Auth + Bearer Auth + SSL bypass), StdlibHttpClient(graceful fallback), HttpSessionManager.auth_headers |
+| E3 | ~~session-materialize 仅 form POST 登录~~ → 部分解决 | ~~Django/Flask-WTF 等 CSRF 站点、API 登录~~ → v3.11 CSRF 预取(form/meta/header) + JSON body + auth 持久化已实现；多步认证(2FA/OAuth)仍 TODO | ~~致命~~ → 降为高 |
+| E4 | ~~code-sandbox 禁止 class/lambda/with/raise，无 crypto 库~~ → 部分解决 | ~~RSA/AES/ECC 类密码题、复杂算法~~ → v3.13 class/with/raise 允许 + zlib/csv 导入；lambda 仍禁止 + crypto 库(cryptography/pycryptodome)仍不可用 | ~~高~~ → 降为中 |
+| E5 | ~~artifact-scan 不提取 ZIP/tar 内容（仅列文件名），预览仅 64 字节，下载后立即清理临时文件~~ → 已解决 | ~~Forensics 取证题、需要多步分析的文件题~~ → v3.12 content_preview(ZIP/tar 成员文本) + content_type(MIME 映射) + 预览 512→4096 + temp_dir 延迟清理 | ~~高~~ → 已解决 |
 | E6 | binary-inspect 无反汇编、无熵分析、strings 限制 20 条 | Reverse 逆向题 | 高 |
 | E7 | extract-candidate 仅正则匹配，无启发式 flag 检测 | 非 `flag{}` 格式的 flag | 中 |
 | E8 | 原语无 retry 逻辑，网络失败直接返回 failed | 瞬态故障场景 | 低 |
@@ -126,19 +146,28 @@
 
 #### 当前能解 vs 不能解
 
-**勉强能解（约 10-15% CTF 题）**：
+**勉强能解（约 20-25% CTF 题）**：
 - 简单 HTTP GET 页面 + HTML 注释隐藏 flag
-- 简单 base64/xor/hex 编码题（code-sandbox 可解）
+- 简单 base64/xor/hex/zlib 压缩/CSV 解析编码题（code-sandbox class/with/raise 可解）
+- 简单 class 结构化解码（RSA/AES 参数组装、自定义解码器）
+- with 上下文管理器模式（资源清理、文件操作模拟）
 - 简单 form POST 登录后获取 flag
 - JSON API 响应中直接包含 flag
+- Basic Auth 保护页面
+- Bearer token 保护 API
+- 文件上传 web 题
+- HTTPS 自签名靶场
+- CSRF token 保护登录页面（Django/Flask-WTF 等）
+- JSON body API 登录
+- ZIP/tar 内嵌 flag（内容提取 + 文本预览）
 
-**完全不能解（约 85% CTF 题）**：
+**完全不能解（约 70-75% CTF 题）**：
 - JS 渲染/JS 操纵类 web 题
-- 文件上传、SSRF、CSRF、SSTI、IDOR、race condition
+- SSRF、SSTI、IDOR、race condition
 - 现代密码题（RSA、AES、padding oracle）
 - Reverse/pwn 题
-- Forensics 取证题（ZIP 内容不提取、无 pcap/EXIF）
-- 多步认证、OAuth、JWT 操纵类
+- Forensics 取证题（无 pcap/EXIF、无磁盘映像分析）
+- 多步认证（2FA、OAuth、JWT 操纵）
 
 ---
 
@@ -156,13 +185,13 @@
 
 #### Phase 2：补齐原语能力（P1，约 5 天）
 
-| # | 任务 | 工作量 | 交付物 |
-|---|------|--------|--------|
-| R4 | browser-inspect 接 Playwright | 2 天 | JS 渲染 + script 读取 + 测试 |
-| R5 | http-request 接 requests + multipart + Basic Auth + SSL | 1 天 | 文件上传 + 认证 + 测试 |
-| R6 | session-materialize CSRF 预取 + JSON body | 1 天 | CSRF token + JSON 登录 + 测试 |
-| R7 | artifact-scan 提取 ZIP/tar 内容 + 保留临时文件 + 增大预览 | 0.5 天 | 完整文件分析 + 测试 |
-| R8 | code-sandbox 放宽：class/with/raise + 加 zlib/csv | 0.5 天 | 更强解码能力 + 测试 |
+| # | 任务 | 工作量 | 交付物 | 完成日期 |
+|---|------|--------|--------|----------|
+| R4 | browser-inspect 接 Playwright | 2 天 | JS 渲染 + script 读取 + 测试 | 2026-04-28 |
+| R5 | http-request 接 requests + multipart + Basic Auth + SSL | 1 天 | 文件上传 + 认证 + 测试 | 2026-04-29 |
+| R6 | session-materialize CSRF 预取 + JSON body | 1 天 | CSRF token + JSON 登录 + 测试 | 2026-04-29 |
+| R7 | artifact-scan 提取 ZIP/tar 内容 + 保留临时文件 + 增大预览 | 0.5 天 | 完整文件分析 + 测试 | 2026-04-29 |
+| R8 | code-sandbox 放宽：class/with/raise + 加 zlib/csv | 0.5 天 | 更强解码能力 + 测试 | 2026-04-29 |
 
 **Phase 2 目标**：原语覆盖 70%+ 常见 web/encoding/forensics 类 CTF 题。
 

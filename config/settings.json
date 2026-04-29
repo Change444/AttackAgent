@@ -62,5 +62,19 @@
     "level": "INFO",
     "enable_event_logging": true,
     "enable_performance_logging": false
+  },
+  "browser": {
+    "engine": "auto",
+    "headless": true,
+    "browser_type": "chromium",
+    "timeout_seconds": 30.0,
+    "wait_for_selector": null,
+    "extract_scripts": true
+  },
+  "http": {
+    "engine": "auto",
+    "verify_ssl": true,
+    "max_redirects": 10,
+    "timeout_seconds": 10.0
   }
 }

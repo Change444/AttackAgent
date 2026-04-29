@@ -58,6 +58,10 @@ platform.solve_all()
 | PatternInjector | `pattern_injector.py` | 动态模式回注 |
 | DynamicPatternComposer | `dynamic_pattern_composer.py` | 成功案例模式发现 |
 | SemanticRetrievalEngine | `semantic_retrieval.py` | TF-IDF + embedding 混合检索 |
+| PlaywrightBrowserInspector / StdlibBrowserInspector | `browser_adapter.py` | JS 渲染 + script 读取（Playwright），stdlib 回退 |
+| RequestsHttpClient / StdlibHttpClient | `http_adapter.py` | multipart + Basic Auth + Bearer Auth + SSL bypass（requests），stdlib 回退 |
+| WorkerRuntime (session-materialize) | `runtime.py` | CSRF 预取(form/meta/header) + JSON body + auth token 持久化 |
+| WorkerRuntime (artifact-scan) | `runtime.py` | ZIP/tar 内容提取(content_preview) + MIME 映射(_guess_content_type) + 预览 512→4096 + temp_dir 延迟清理 |
 | LightweightSecurityShell | `constraints.py` | 执行前约束验证 |
 | ObservationSummarizer | `observation_summarizer.py` | 观测→有限长度文本 |
 | AttackAgentConfig | `config.py` | JSON + dataclass 配置 |
@@ -68,7 +72,7 @@ platform.solve_all()
 - 参数优先级：`step.parameters` > metadata defaults > hardcoded defaults
 - SecurityConstraints 值来自 SecurityConfig（单一源），见 `attack_agent/constraints.py`
 - 原语无配置时干净失败（`_clean_fail`），不再假装工作
-- CodeSandbox 规则见 `attack_agent/apg.py` SAFE_BUILTINS / SAFE_IMPORTS
+- CodeSandbox 规则见 `attack_agent/apg.py` SAFE_BUILTINS / SAFE_IMPORTS（class/with/raise 已允许，lambda/global/nonlocal/delete/async 仍禁止；SAFE_IMPORTS 含 zlib/csv）
 - 配置字段定义见 `attack_agent/config.py` 和 `config/settings.json`
 - 可选依赖见 `pyproject.toml`
 
@@ -79,8 +83,9 @@ platform.solve_all()
 
 ## Known Limitations (摘要)
 
-当前系统**无法成功解题**（已可连接真实 CTFd 靶场）。关键差距：
-- browser-inspect 不执行 JS、http-request 无 multipart/session-materialize 无 CSRF → web 题 85% 不能解
+当前系统**解题率约 25-30%**（已可连接真实 CTFd 靶场）。关键差距：
+- browser-inspect 不执行 JS、session-materialize 无多步认证 → web 题 70% 不能解
+- code-sandbox 仍禁止 lambda + 无 crypto 库 → 高级密码题不能解（class/with/raise + zlib/csv 已放开）
 - 6 族关键词过浅 + 步骤空模板 → 规划策略僵硬
 
 **完整问题清单 + 四阶段解决计划**：见 [docs/CHANGELOG.md](docs/CHANGELOG.md) "Current Limitations & Roadmap" 章节

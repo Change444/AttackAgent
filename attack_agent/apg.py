@@ -290,14 +290,15 @@ class CodeSandbox:
         "AttributeError": AttributeError,
         "RuntimeError": RuntimeError,
         "Exception": Exception,
+        "__build_class__": __build_class__,
         "__import__": __import__,
     }
-    SAFE_IMPORTS = frozenset({"hashlib", "base64", "struct", "binascii", "itertools", "collections", "math", "re", "json"})
+    SAFE_IMPORTS = frozenset({"hashlib", "base64", "struct", "binascii", "itertools", "collections", "math", "re", "json", "zlib", "csv"})
 
     def execute(self, program_fragment: str, inputs: dict[str, object]) -> dict[str, object]:
         tree = ast.parse(program_fragment, mode="exec")
         _SafeAstValidator(set(self.SAFE_BUILTINS), self.SAFE_IMPORTS).visit(tree)
-        globals_scope = {"__builtins__": self.SAFE_BUILTINS, "inputs": inputs, "json": json, "re": re}
+        globals_scope = {"__builtins__": self.SAFE_BUILTINS, "__name__": "__sandbox__", "inputs": inputs, "json": json, "re": re}
         for module_name in self.SAFE_IMPORTS:
             globals_scope[module_name] = __import__(module_name)
         locals_scope: dict[str, object] = {}
@@ -501,12 +502,9 @@ class _SafeAstValidator(ast.NodeVisitor):
         if isinstance(
             node,
             (
-                ast.With,
                 ast.AsyncWith,
-                ast.Raise,
                 ast.Global,
                 ast.Nonlocal,
-                ast.ClassDef,
                 ast.AsyncFunctionDef,
                 ast.Lambda,
                 ast.Delete,
@@ -530,6 +528,10 @@ class _SafeAstValidator(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self.defined_names.add(node.name)
+        self.generic_visit(node)
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
         self.defined_names.add(node.name)
         self.generic_visit(node)
 
