@@ -31,5 +31,8 @@ htmlcov/
 # Logs
 *.log
 
+# Local model/API configuration
+config/local-openai-compatible.json
+
 # Claude Code local settings
 .claude/settings.local.json

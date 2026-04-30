@@ -251,3 +251,72 @@
 | 添加性能监控 | 未开始 |
 | 优化检索质量 | 未开始 |
 | 优化规划延迟 | 未开始 |
+
+---
+
+## 2026-04-30 运行验证记录：测试提速与真实模型联调
+
+### 背景
+
+本次验证目标是确认当前项目能否正常工作，并定位全量测试耗时过长的问题。验证范围包括：
+- 本地单元/集成测试：`python -m unittest discover tests/ -v`
+- CLI heuristic 冒烟：`python -m attack_agent --config config/settings.json --max-cycles 12 --verbose`
+- OpenAI 兼容接口真实模型联调：通过 `config/local-openai-compatible.json` + `ATTACK_AGENT_API_KEY`/本地密钥配置
+
+### 已解决问题
+
+1. **全量测试耗时过长**
+   - 根因：`tests/test_platform_flow.py` 中多个失败路径测试使用生产默认 HTTP/browser timeout，并重复执行 `solve_all(max_cycles=12)`；无真实 target 时会反复等待网络超时。
+   - 修复：为 platform flow 测试增加测试专用 `fast_test_config()`，使用 stdlib HTTP/browser、短 timeout、短 stagnation/path-switch 阈值；将该模块中的 `solve_all(max_cycles=12)` 收敛为 `FAST_SOLVE_CYCLES = 3`。
+   - 结果：全量测试从约 **292s** 降到约 **36s**；`test_platform_flow` 从约 **5min+** 降到约 **14s**。
+
+2. **重复集成测试浪费时间**
+   - 根因：console summary/pattern/journal 三个测试各自重新跑一次完整 platform flow；`http_request_without_real_target` 与 identity 无真实 target 测试覆盖同一失败语义。
+   - 修复：合并 console 输出测试为一个用例；删除重复的 HTTP 无真实 target 测试，保留 identity/http 失败语义覆盖。
+   - 结果：测试数从 **330** 调整为 **327**，覆盖重点保持不变。
+
+3. **本地模型配置误提交风险**
+   - 根因：真实模型联调需要在本地配置 OpenAI 兼容 `base_url`/`model_name`/key。
+   - 修复：`.gitignore` 增加 `config/local-openai-compatible.json`，避免提交本地接口地址和密钥。
+
+### 真实模型联调发现
+
+1. **模型接口可用**
+   - `select_worker_profile` 最小探针成功返回 JSON，包含 `profile`/`reason`。
+   - 平台 API 联调成功产生 `program_compiled`，`planner_source=['llm', 'llm']`，说明真实模型已参与 worker/profile 决策和结构化 program 选择。
+
+2. **API key 配置优先级容易踩坑**
+   - 当前 `model_adapter._resolve_api_key()` 优先读取 `api_key_env`，只有 `api_key_env` 为空时才读取 literal `api_key`。
+   - 如果配置同时写了 `api_key` 和 `api_key_env="ATTACK_AGENT_API_KEY"`，但环境变量未设置，CLI 会报 `ValueError: environment variable ATTACK_AGENT_API_KEY not set`。
+   - 临时联调方式：在启动进程前把本地配置中的 key 注入同名环境变量；长期建议二选一：要么只用环境变量，要么清空 `api_key_env` 后使用本地 literal key。
+
+3. **OpenAI 兼容接口对较长输出参数敏感**
+   - `max_tokens=1024` 时，`choose_program` 曾触发 `model_adapter_connection_error`。
+   - 将 `max_tokens` 临时降到 `256`、`timeout_seconds` 提高到 `60` 后，`choose_program` 和平台 4-cycle 联调均成功。
+   - 建议本地模型联调配置：
+     - `max_tokens`: 256
+     - `timeout_seconds`: 60
+     - `max_retries`: 0（调试时避免重试掩盖真实失败点）
+
+4. **当前 `127.0.0.1:8000` 未提供可连接靶场服务**
+   - shell 侧 `Invoke-WebRequest http://127.0.0.1:8000/` 返回无法连接远程服务器。
+   - 因此本次只能确认“模型 + AttackAgent 调度链路”正常，不能确认“模型 + 真实 localhost:8000 靶场解题”。
+
+### 验证结果
+
+```bash
+python -m unittest tests.test_platform_flow -v
+# Ran 13 tests in ~14s, OK
+
+python -m unittest discover tests/ -v
+# Ran 327 tests in ~36s, OK
+```
+
+真实模型平台联调摘要：
+```text
+ok=True
+program_compiled_count=2
+planner_sources=['llm', 'llm']
+outcome_count=2
+candidate_flags=0
+```
