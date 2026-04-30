@@ -240,7 +240,7 @@ class ConstraintAwareReasoner:
             cred_strs = [f"{c.username}@{c.service}" for c in ws.credentials.values()]
             parts.append(f"已知凭据: {'; '.join(cred_strs)}")
         if ws.findings:
-            find_strs = [f.text for f in ws.findings.values()]
+            find_strs = [f.title for f in ws.findings.values()]
             parts.append(f"已知发现: {'; '.join(find_strs)}")
         if record.artifacts:
             parts.append(f"已有证据: {len(record.artifacts)} 个")
