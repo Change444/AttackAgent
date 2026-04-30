@@ -6,7 +6,8 @@ from attack_agent.constraint_aware_reasoner import (
     ConstraintAwareReasoner,
     ConstraintContextBuilder,
 )
-from attack_agent.constraints import LightweightSecurityShell, SecurityConstraints
+from attack_agent.constraints import LightweightSecurityShell
+from attack_agent.config import SecurityConfig
 from attack_agent.dynamic_pattern_composer import DynamicPatternComposer
 from attack_agent.platform_models import (
     ActionProgram,
@@ -32,14 +33,14 @@ class TestEnhancedAPGPlanner(unittest.TestCase):
         self.memory = EpisodeMemory()
         self.apg = APGPlanner(self.memory)
 
-        self.constraints = SecurityConstraints(
+        self.security_config = SecurityConfig(
             allowed_hostpatterns=["127.0.0.1"],
             max_program_steps=15,
             require_observation_before_action=True,
             max_estimated_cost=50.0,
         )
-        self.shell = LightweightSecurityShell(self.constraints)
-        self.builder = ConstraintContextBuilder(self.constraints)
+        self.shell = LightweightSecurityShell(self.security_config)
+        self.builder = ConstraintContextBuilder(self.security_config)
 
         self.model_response = {
             "rationale": "尝试HTTP请求",

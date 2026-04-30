@@ -1,7 +1,8 @@
 import unittest
 
 from attack_agent.constraint_aware_reasoner import ConstraintContextBuilder, PRIMITIVE_DESCRIPTIONS
-from attack_agent.constraints import LightweightSecurityShell, SecurityConstraints
+from attack_agent.constraints import LightweightSecurityShell
+from attack_agent.config import SecurityConfig
 from attack_agent.dynamic_pattern_composer import DynamicPatternComposer, PatternTemplate, StepTemplate, ParameterSpec
 from attack_agent.heuristic_free_exploration import HeuristicFreeExplorationPlanner
 from attack_agent.observation_summarizer import ObservationSummarizer
@@ -43,9 +44,9 @@ def _make_record(challenge: ChallengeDefinition) -> tuple[StateGraphService, obj
 class TestHeuristicFreeExplorationPlanner(unittest.TestCase):
 
     def setUp(self) -> None:
-        self.security_constraints = SecurityConstraints()
-        self.shell = LightweightSecurityShell(self.security_constraints)
-        self.builder = ConstraintContextBuilder(self.security_constraints)
+        self.security_config = SecurityConfig()
+        self.shell = LightweightSecurityShell(self.security_config)
+        self.builder = ConstraintContextBuilder(self.security_config)
         self.composer = DynamicPatternComposer()
         self.summarizer = ObservationSummarizer()
         self.sg = StateGraphService()
@@ -191,8 +192,8 @@ class TestHeuristicFreeExplorationPlanner(unittest.TestCase):
                                 description="test"),
         ])
         platform = CompetitionPlatform(provider, model=None)
-        self.assertIsInstance(platform.strategy.planner, EnhancedAPGPlanner)
-        self.assertIsInstance(platform.strategy.planner.free_exploration_planner, HeuristicFreeExplorationPlanner)
+        self.assertIsInstance(platform.dispatcher.planner, EnhancedAPGPlanner)
+        self.assertIsInstance(platform.dispatcher.planner.free_exploration_planner, HeuristicFreeExplorationPlanner)
 
     def test_generate_plan_steps_have_challenge_target_urls(self):
         """Steps in generated plan should have challenge target URL injected"""

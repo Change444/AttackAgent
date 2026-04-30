@@ -1,41 +1,52 @@
 from __future__ import annotations
 
+import re
+
+from .config import SecurityConfig
+from .constraints import LightweightSecurityShell
 from .models import ActionRecord, new_id, utc_now
-from .platform_models import Event, EventType, ProjectStage
+from .platform_models import ActionProgram, CandidateFlag, Event, EventType, PatternNodeKind, ProjectSnapshot, ProjectStage, TaskBundle, WorkerProfile
 from .runtime import WorkerPool, WorkerRuntime
 from .state_graph import StateGraphService
-from .strategy import StrategyLayer
-from .constraints import LightweightSecurityShell, SecurityConstraints
+from .strategy import SubmitClassifier, TaskPromptCompiler
 
 
 class Dispatcher:
-    def __init__(self, state_graph: StateGraphService, runtime: WorkerRuntime, strategy: StrategyLayer, worker_pool: WorkerPool | None = None, security_constraints: SecurityConstraints | None = None) -> None:
+    def __init__(self, state_graph: StateGraphService, runtime: WorkerRuntime, planner,
+                 worker_pool: WorkerPool | None = None,
+                 security_config: SecurityConfig | None = None,
+                 stagnation_threshold: int = 8,
+                 confidence_threshold: float = 0.6) -> None:
         self.state_graph = state_graph
         self.runtime = runtime
-        self.strategy = strategy
+        self.planner = planner
         self.worker_pool = worker_pool or WorkerPool()
-        # 安全壳：接受外部传入的约束，或使用默认值
-        self.security_shell = LightweightSecurityShell(security_constraints)
+        self.security_shell = LightweightSecurityShell(security_config)
+        self.stagnation_threshold = stagnation_threshold
+        self.task_compiler = TaskPromptCompiler()
+        self.submit_classifier = SubmitClassifier(confidence_threshold)
 
     def schedule(self, project_id: str) -> None:
         record = self.state_graph.projects[project_id]
         if record.snapshot.stage == ProjectStage.BOOTSTRAP:
-            record.snapshot.worker_profile = self.strategy.select_profile(record.snapshot)
+            profile, _reason = self.planner.reasoner.choose_profile(record.snapshot)
+            record.snapshot.worker_profile = profile
             record.snapshot.stage = ProjectStage.REASON
             return
         if record.snapshot.stage == ProjectStage.REASON:
-            self.strategy.initialize_graph(record)
+            record.pattern_graph = self.planner.create_graph(record.snapshot)
+            record.snapshot.stage = ProjectStage.EXPLORE
             return
         if record.snapshot.stage != ProjectStage.EXPLORE:
             return
-        program, memory_hits = self.strategy.next_program(record)
+        program, memory_hits = self.planner.plan(record)
         if program is None:
             record.snapshot.stage = ProjectStage.CONVERGE
             return
         record.snapshot.worker_profile = program.required_profile
         worker = self.assign_worker(project_id)
         visible_primitives = self.runtime.registry.visible_primitives(program.required_profile)
-        bundle = self.strategy.task_compiler.compile_bundle(record, program, program.required_profile, visible_primitives, memory_hits)
+        bundle = self.task_compiler.compile_bundle(record, program, program.required_profile, visible_primitives, memory_hits)
 
         # 安全壳验证（轻量级，快速）
         validation = self.security_shell.validate(bundle)
@@ -72,8 +83,23 @@ class Dispatcher:
         for event in events:
             self.state_graph.append_event(event)
         self._record_outcome(record, program, outcome)
-        self.strategy.update_after_outcome(record, program, outcome)
-        record.snapshot.stage = self.strategy.stage_after_program(record)
+        self._update_after_outcome(record, program, outcome)
+        record.snapshot.stage = self._stage_after_program(record)
+
+        # Check abandon after outcome
+        success = outcome.status == "ok" and (outcome.novelty > 0 or outcome.candidate_flags)
+        if not success and self.should_abandon(record):
+            record.snapshot.stage = ProjectStage.ABANDONED
+            record.snapshot.status = "abandoned"
+            self.state_graph.append_event(
+                Event(
+                    type=EventType.PROJECT_ABANDONED,
+                    project_id=record.snapshot.project_id,
+                    run_id=f"abandon-{record.snapshot.project_id}",
+                    payload={"reason": "graph_stagnation"},
+                    source="dispatcher",
+                )
+            )
 
     def assign_worker(self, project_id: str):
         record = self.state_graph.projects[project_id]
@@ -163,17 +189,29 @@ class Dispatcher:
                 cost=outcome.cost,
             )
         )
-        if success:
+
+    def _update_after_outcome(self, record, program: ActionProgram, outcome) -> None:
+        self.planner.update_graph(record, program, outcome)
+        # Also update EnhancedAPGPlanner stagnation counter for path switching
+        if hasattr(self.planner, 'record_outcome'):
+            self.planner.record_outcome(record, program, outcome)
+        if outcome.status == "ok" and outcome.novelty > 0.0:
+            record.stagnation_counter = 0
             return
-        if self.strategy.should_abandon(record):
-            record.snapshot.stage = ProjectStage.ABANDONED
-            record.snapshot.status = "abandoned"
-            self.state_graph.append_event(
-                Event(
-                    type=EventType.PROJECT_ABANDONED,
-                    project_id=record.snapshot.project_id,
-                    run_id=f"abandon-{record.snapshot.project_id}",
-                    payload={"reason": "graph_stagnation"},
-                    source="dispatcher",
-                )
-            )
+        record.stagnation_counter += 1
+
+    def _stage_after_program(self, record) -> ProjectStage:
+        if record.candidate_flags:
+            return ProjectStage.CONVERGE
+        if record.pattern_graph is None:
+            return ProjectStage.CONVERGE
+        unfinished = [node for node in record.pattern_graph.nodes.values() if node.kind != PatternNodeKind.GOAL and node.status in {"pending", "active"}]
+        return ProjectStage.EXPLORE if unfinished else ProjectStage.CONVERGE
+
+    def should_abandon(self, record) -> bool:
+        recent_failures = record.world_state.recent_failures(limit=4)
+        if record.stagnation_counter < self.stagnation_threshold:
+            return False
+        repeated_dead_ends = len(record.tombstones) >= 2
+        low_novelty = all(failure.status == "failed" for failure in recent_failures) if recent_failures else True
+        return repeated_dead_ends or low_novelty

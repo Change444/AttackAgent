@@ -333,14 +333,13 @@ class TestConfigFromDefaults(unittest.TestCase):
         self.assertEqual(config.platform.stagnation_threshold, 8)
         self.assertEqual(config.platform.flag_confidence_threshold, 0.6)
 
-    def test_from_defaults_security_matches_constraints(self):
-        """from_defaults() security values should match SecurityConstraints defaults."""
-        from attack_agent.constraints import SecurityConstraints
+    def test_from_defaults_security_values(self):
+        """from_defaults() security values should be usable directly."""
         config = AttackAgentConfig.from_defaults()
-        constraints = SecurityConstraints.from_config(config.security)
-        defaults = SecurityConstraints()
-        self.assertEqual(constraints.max_http_requests, defaults.max_http_requests)
-        self.assertEqual(constraints.max_program_steps, defaults.max_program_steps)
+        from attack_agent.constraints import LightweightSecurityShell
+        shell = LightweightSecurityShell(config.security)
+        self.assertEqual(shell.security_config.max_http_requests, 30)
+        self.assertEqual(shell.security_config.max_program_steps, 15)
 
 
 if __name__ == "__main__":

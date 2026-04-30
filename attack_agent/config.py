@@ -42,10 +42,13 @@ class SecurityConfig:
     max_program_steps: int = 15
     require_observation_before_action: bool = True
     max_estimated_cost: float = 50.0
+    forbidden_primitive_combinations: list[tuple[str, str]] | None = None
 
     def __post_init__(self) -> None:
         if self.allowed_hostpatterns is None:
             self.allowed_hostpatterns = ["127.0.0.1", "localhost"]
+        if self.forbidden_primitive_combinations is None:
+            self.forbidden_primitive_combinations = []
 
 
 @dataclass(slots=True)

@@ -255,7 +255,7 @@ class _TestHTTPHandler(http.server.BaseHTTPRequestHandler):
     }
 
     def do_GET(self):
-        path = self.path.rstrip("/")
+        path = self.path if self.path == "/" else self.path.rstrip("/")
         if path in self.pages:
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
@@ -271,7 +271,7 @@ class _TestHTTPHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"Not found")
 
     def do_POST(self):
-        path = self.path.rstrip("/")
+        path = self.path if self.path == "/" else self.path.rstrip("/")
         if path == "/login":
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length).decode("utf-8")

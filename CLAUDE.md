@@ -37,7 +37,7 @@ platform.solve_all()
 | 层 | 核心模块 | 职责 |
 |----|----------|------|
 | 控制层 | CompetitionPlatform (`platform.py`) | 挑战生命周期，配置加载 |
-| 调度层 | Dispatcher (`dispatcher.py`) + SecurityShell (`constraints.py`) | 状态机调度，安全壳验证 |
+| 调度层 | Dispatcher (`dispatcher.py`) + SecurityShell (`constraints.py`) | 状态机调度，策略逻辑(stagnation/submit)，安全壳验证 |
 | 规划层 | EnhancedAPGPlanner (`enhanced_apg.py`) | 双路径规划，路径选择/切换 |
 | 执行层 | WorkerRuntime (`runtime.py`) | 9 个原语执行，session 持久化 |
 | 状态层 | StateGraphService (`state_graph.py`) | 单一真实源，事件日志 |
@@ -50,7 +50,7 @@ platform.solve_all()
 |------|------|------|
 | CompetitionPlatform | `platform.py` | 主入口，model=None/xxx 分支构建不同规划器 |
 | CLI | `__main__.py` | `python -m attack_agent` 命令行接口 |
-| Dispatcher | `dispatcher.py` | 状态机调度，集成安全壳 |
+| Dispatcher | `dispatcher.py` | 状态机调度，策略逻辑（stagnation/submit/stage） |
 | EnhancedAPGPlanner | `enhanced_apg.py` | 双路径规划 |
 | ConstraintAwareReasoner | `constraint_aware_reasoner.py` | LLM 约束推理 |
 | HeuristicFreeExplorationPlanner | `heuristic_free_exploration.py` | 无 LLM 自由探索 |
@@ -62,7 +62,8 @@ platform.solve_all()
 | RequestsHttpClient / StdlibHttpClient | `http_adapter.py` | multipart + Basic Auth + Bearer Auth + SSL bypass（requests），stdlib 回退 |
 | WorkerRuntime (session-materialize) | `runtime.py` | CSRF 预取(form/meta/header) + JSON body + auth token 持久化 |
 | WorkerRuntime (artifact-scan) | `runtime.py` | ZIP/tar 内容提取(content_preview) + MIME 映射(_guess_content_type) + 预览 512→4096 + temp_dir 延迟清理 |
-| LightweightSecurityShell | `constraints.py` | 执行前约束验证 |
+| LightweightSecurityShell | `constraints.py` | 执行前约束验证（直接持有 SecurityConfig） |
+| SubmitClassifier / TaskPromptCompiler | `strategy.py` | 提交分类 + 任务编译 |
 | ObservationSummarizer | `observation_summarizer.py` | 观测→有限长度文本 |
 | AttackAgentConfig | `config.py` | JSON + dataclass 配置 |
 
@@ -70,7 +71,7 @@ platform.solve_all()
 
 - 安全壳在 runtime 执行前验证；critical 违规阻止执行
 - 参数优先级：`step.parameters` > metadata defaults > hardcoded defaults
-- SecurityConstraints 值来自 SecurityConfig（单一源），见 `attack_agent/constraints.py`
+- SecurityConstraints 已删除，SecurityConfig 直接作为 LightweightSecurityShell 约束源，见 `attack_agent/constraints.py` 和 `attack_agent/config.py`
 - 原语无配置时干净失败（`_clean_fail`），不再假装工作
 - CodeSandbox 规则见 `attack_agent/apg.py` SAFE_BUILTINS / SAFE_IMPORTS（class/with/raise 已允许，lambda/global/nonlocal/delete/async 仍禁止；SAFE_IMPORTS 含 zlib/csv）
 - 族关键词见 `attack_agent/apg.py` FAMILY_KEYWORDS（14 族：identity/input-interpreter/reflection-render/file-archive/encoding/binary + ssrf-server/ssti-template/csrf-state/idor-access/crypto-math/pwn-memory/protocol-logic/race-condition）

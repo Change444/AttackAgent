@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 from .apg import APGPlanner
-from .config import AttackAgentConfig, BrowserConfig, HttpConfig
+from .config import AttackAgentConfig, BrowserConfig, HttpConfig, SecurityConfig
 from .constraint_aware_reasoner import ConstraintAwareReasoner, ConstraintContextBuilder
-from .constraints import LightweightSecurityShell, SecurityConstraints
+from .constraints import LightweightSecurityShell
 from .controller import Controller
 from .dispatcher import Dispatcher
 from .dynamic_pattern_composer import DynamicPatternComposer
@@ -18,7 +18,6 @@ from .embedding_adapter import build_embedding_from_config
 from .semantic_retrieval import SemanticRetrievalEngine, InMemoryVectorStore
 from .runtime import WorkerRuntime
 from .state_graph import StateGraphService
-from .strategy import StrategyLayer
 
 
 class CompetitionPlatform:
@@ -43,9 +42,9 @@ class CompetitionPlatform:
             stag_thr = 8
             conf_thr = 0.6
 
-        # 从 AttackAgentConfig.security 构建 SecurityConstraints（单一真实源）
+        # 从 AttackAgentConfig.security 构建 SecurityConfig（单一真实源）
         if agent_config is not None:
-            security_constraints = SecurityConstraints.from_config(agent_config.security)
+            security_config = agent_config.security
             dual_config = config or agent_config.dual_path
             budget_chars = agent_config.model.observation_summary_budget_chars
             summarizer = ObservationSummarizer(ObservationSummarizerConfig(max_total_chars=budget_chars))
@@ -59,7 +58,7 @@ class CompetitionPlatform:
                 embedding_model=embedding_model,
             )
         else:
-            security_constraints = SecurityConstraints()
+            security_config = SecurityConfig()
             dual_config = config or DualPathConfig()
             summarizer = ObservationSummarizer()
             semantic = SemanticRetrievalEngine()
@@ -69,8 +68,8 @@ class CompetitionPlatform:
 
         if model is not None:
             llm_reasoner = LLMReasoner(model)
-            shell = LightweightSecurityShell(security_constraints)
-            builder = ConstraintContextBuilder(security_constraints)
+            shell = LightweightSecurityShell(security_config)
+            builder = ConstraintContextBuilder(security_config)
             constraint_reasoner = ConstraintAwareReasoner(model, builder, shell, summarizer=summarizer)
             structured = APGPlanner(self.state_graph.episode_memory, reasoner=llm_reasoner, summarizer=summarizer)
             injector = PatternInjector(structured.pattern_library)
@@ -82,13 +81,10 @@ class CompetitionPlatform:
                 pattern_composer=composer,
                 config=dual_config,
             )
-            self.strategy = StrategyLayer(enhanced,
-                stagnation_threshold=stag_thr,
-                confidence_threshold=conf_thr)
         else:
             heuristic = reasoner or HeuristicReasoner()
-            shell = LightweightSecurityShell(security_constraints)
-            builder = ConstraintContextBuilder(security_constraints)
+            shell = LightweightSecurityShell(security_config)
+            builder = ConstraintContextBuilder(security_config)
             structured = APGPlanner(self.state_graph.episode_memory, reasoner=heuristic, summarizer=summarizer)
             injector = PatternInjector(structured.pattern_library)
             composer = DynamicPatternComposer(injector=injector)
@@ -106,13 +102,12 @@ class CompetitionPlatform:
                 pattern_composer=heuristic_free_planner.pattern_composer,
                 config=dual_config,
             )
-            self.strategy = StrategyLayer(enhanced,
-                stagnation_threshold=stag_thr,
-                confidence_threshold=conf_thr)
 
         self.dispatcher = Dispatcher(
-            self.state_graph, self.runtime, self.strategy,
-            security_constraints=security_constraints,
+            self.state_graph, self.runtime, enhanced,
+            security_config=security_config,
+            stagnation_threshold=stag_thr,
+            confidence_threshold=conf_thr,
         )
 
     def bootstrap(self) -> list[str]:
@@ -131,7 +126,7 @@ class CompetitionPlatform:
             accepted = False
             existing_keys = set()
             for dedupe_key, candidate in list(record.candidate_flags.items()):
-                decision = self.strategy.submit_classifier.classify(record.snapshot, candidate, existing_keys)
+                decision = self.dispatcher.submit_classifier.classify(record.snapshot, candidate, existing_keys)
                 if not decision.accepted:
                     continue
                 self.controller.submit_candidate(project_id, dedupe_key)

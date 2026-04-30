@@ -8,7 +8,8 @@ from attack_agent.constraint_aware_reasoner import (
     CONSTRAINT_AWARE_PROMPT,
     PRIMITIVE_DESCRIPTIONS,
 )
-from attack_agent.constraints import LightweightSecurityShell, SecurityConstraints
+from attack_agent.constraints import LightweightSecurityShell
+from attack_agent.config import SecurityConfig
 from attack_agent.platform_models import (
     ActionProgram,
     ChallengeDefinition,
@@ -54,7 +55,7 @@ class TestConstraintContext(unittest.TestCase):
 class TestConstraintContextBuilder(unittest.TestCase):
 
     def setUp(self):
-        self.constraints = SecurityConstraints(
+        self.security_config = SecurityConfig(
             allowed_hostpatterns=["127.0.0.1"],
             max_http_requests=30,
             max_sandbox_executions=5,
@@ -62,7 +63,7 @@ class TestConstraintContextBuilder(unittest.TestCase):
             require_observation_before_action=True,
             max_estimated_cost=50.0,
         )
-        self.builder = ConstraintContextBuilder(self.constraints)
+        self.builder = ConstraintContextBuilder(self.security_config)
         self.challenge = ChallengeDefinition(
             id="test-1", name="Test Challenge", category="web",
             difficulty="easy", target="http://127.0.0.1:8000",
@@ -97,14 +98,14 @@ class TestConstraintContextBuilder(unittest.TestCase):
 class TestConstraintAwareReasoner(unittest.TestCase):
 
     def setUp(self):
-        self.constraints = SecurityConstraints(
+        self.security_config = SecurityConfig(
             allowed_hostpatterns=["127.0.0.1"],
             max_program_steps=15,
             require_observation_before_action=True,
             max_estimated_cost=50.0,
         )
-        self.shell = LightweightSecurityShell(self.constraints)
-        self.builder = ConstraintContextBuilder(self.constraints)
+        self.shell = LightweightSecurityShell(self.security_config)
+        self.builder = ConstraintContextBuilder(self.security_config)
         self.challenge = ChallengeDefinition(
             id="test-1", name="SQL注入", category="web",
             difficulty="easy", target="http://127.0.0.1:8000",

@@ -1,7 +1,6 @@
 import unittest
 from attack_agent.constraints import (
     LightweightSecurityShell,
-    SecurityConstraints,
     ConstraintViolation,
     ValidationResult
 )
@@ -17,22 +16,22 @@ from attack_agent.platform_models import (
 )
 
 
-class TestSecurityConstraintsDefaults(unittest.TestCase):
-    """测试 SecurityConstraints 默认值与 SecurityConfig 对齐"""
+class TestSecurityConfigDefaults(unittest.TestCase):
+    """测试 SecurityConfig 默认值一致性"""
 
-    def test_defaults_match_security_config(self):
-        """SecurityConstraints 默认值应与 SecurityConfig 默认值一致"""
-        constraints = SecurityConstraints()
+    def test_default_security_config_values(self):
+        """SecurityConfig 默认值应可用于直接构建 LightweightSecurityShell"""
         config = SecurityConfig()
-        self.assertEqual(constraints.max_http_requests, config.max_http_requests)
-        self.assertEqual(constraints.max_sandbox_executions, config.max_sandbox_executions)
-        self.assertEqual(constraints.max_program_steps, config.max_program_steps)
-        self.assertEqual(constraints.require_observation_before_action, config.require_observation_before_action)
-        self.assertEqual(constraints.max_estimated_cost, config.max_estimated_cost)
-        self.assertEqual(constraints.allowed_hostpatterns, config.allowed_hostpatterns)
+        shell = LightweightSecurityShell(config)
+        self.assertEqual(shell.security_config.max_http_requests, 30)
+        self.assertEqual(shell.security_config.max_sandbox_executions, 5)
+        self.assertEqual(shell.security_config.max_program_steps, 15)
+        self.assertEqual(shell.security_config.require_observation_before_action, True)
+        self.assertEqual(shell.security_config.max_estimated_cost, 50.0)
+        self.assertEqual(shell.security_config.allowed_hostpatterns, ["127.0.0.1", "localhost"])
 
-    def test_from_config_preserves_values(self):
-        """from_config 应将 SecurityConfig 值完整映射到 SecurityConstraints"""
+    def test_custom_security_config_preserves_values(self):
+        """自定义 SecurityConfig 值应被 LightweightSecurityShell 正确使用"""
         config = SecurityConfig(
             allowed_hostpatterns=["10.0.0.1", "target.example.com"],
             max_http_requests=100,
@@ -41,34 +40,34 @@ class TestSecurityConstraintsDefaults(unittest.TestCase):
             require_observation_before_action=False,
             max_estimated_cost=200.0,
         )
-        constraints = SecurityConstraints.from_config(config)
-        self.assertEqual(constraints.allowed_hostpatterns, ["10.0.0.1", "target.example.com"])
-        self.assertEqual(constraints.max_http_requests, 100)
-        self.assertEqual(constraints.max_sandbox_executions, 3)
-        self.assertEqual(constraints.max_program_steps, 10)
-        self.assertEqual(constraints.require_observation_before_action, False)
-        self.assertEqual(constraints.max_estimated_cost, 200.0)
+        shell = LightweightSecurityShell(config)
+        self.assertEqual(shell.security_config.allowed_hostpatterns, ["10.0.0.1", "target.example.com"])
+        self.assertEqual(shell.security_config.max_http_requests, 100)
+        self.assertEqual(shell.security_config.max_sandbox_executions, 3)
+        self.assertEqual(shell.security_config.max_program_steps, 10)
+        self.assertEqual(shell.security_config.require_observation_before_action, False)
+        self.assertEqual(shell.security_config.max_estimated_cost, 200.0)
 
-    def test_from_config_default_security_config(self):
-        """from_config 使用默认 SecurityConfig 应产生与默认 SecurityConstraints 相同的结果"""
+    def test_default_security_config_matches_default_shell(self):
+        """默认 SecurityConfig 与 LightweightSecurityShell 默认值应一致"""
         config = SecurityConfig()
-        constraints_from_config = SecurityConstraints.from_config(config)
-        constraints_default = SecurityConstraints()
-        self.assertEqual(constraints_from_config.max_http_requests, constraints_default.max_http_requests)
-        self.assertEqual(constraints_from_config.max_program_steps, constraints_default.max_program_steps)
-        self.assertEqual(constraints_from_config.max_estimated_cost, constraints_default.max_estimated_cost)
-        self.assertEqual(constraints_from_config.allowed_hostpatterns, constraints_default.allowed_hostpatterns)
+        shell_with_config = LightweightSecurityShell(config)
+        shell_default = LightweightSecurityShell()
+        self.assertEqual(shell_with_config.security_config.max_http_requests, shell_default.security_config.max_http_requests)
+        self.assertEqual(shell_with_config.security_config.max_program_steps, shell_default.security_config.max_program_steps)
+        self.assertEqual(shell_with_config.security_config.max_estimated_cost, shell_default.security_config.max_estimated_cost)
+        self.assertEqual(shell_with_config.security_config.allowed_hostpatterns, shell_default.security_config.allowed_hostpatterns)
 
 
 class TestLightweightSecurityShell(unittest.TestCase):
 
     def setUp(self):
-        self.constraints = SecurityConstraints(
+        self.security_config = SecurityConfig(
             allowed_hostpatterns=["127.0.0.1"],
             max_http_requests=5,
             max_sandbox_executions=2
         )
-        self.shell = LightweightSecurityShell(self.constraints)
+        self.shell = LightweightSecurityShell(self.security_config)
 
     def test_allowed_target(self):
         """测试允许的目标通过验证"""
@@ -97,7 +96,7 @@ class TestLightweightSecurityShell(unittest.TestCase):
 
     def test_forbidden_combination(self):
         """测试禁止的组合被阻止"""
-        self.constraints.forbidden_primitive_combinations = [("http-request", "code-sandbox")]
+        self.security_config.forbidden_primitive_combinations = [("http-request", "code-sandbox")]
         bundle = self._create_mock_bundle("http://127.0.0.1:8000", ["http-request", "code-sandbox"])
         result = self.shell.validate(bundle)
         self.assertFalse(result.allowed)
@@ -116,7 +115,7 @@ class TestLightweightSecurityShell(unittest.TestCase):
     def test_resource_limit(self):
         """测试资源限制"""
         # 设置较低的成本限制
-        self.constraints.max_estimated_cost = 50.0
+        self.security_config.max_estimated_cost = 50.0
         # 创建超过成本限制的程序
         steps = ["code-sandbox"] * 40  # 每个成本1.5，总共60，超过max_estimated_cost=50.0
         bundle = self._create_mock_bundle("http://127.0.0.1:8000", steps)
@@ -129,7 +128,7 @@ class TestLightweightSecurityShell(unittest.TestCase):
         """测试程序结构检查"""
         # 创建超过步骤限制的程序
         steps = ["http-request"] * 20  # 超过默认max_program_steps=15
-        self.constraints.max_program_steps = 15
+        self.security_config.max_program_steps = 15
         bundle = self._create_mock_bundle("http://127.0.0.1:8000", steps)
         result = self.shell.validate(bundle)
         # warning级别，不阻止执行

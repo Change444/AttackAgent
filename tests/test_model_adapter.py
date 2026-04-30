@@ -265,7 +265,7 @@ class TestPlatformWiring(unittest.TestCase):
                                 description="test"),
         ])
         platform = CompetitionPlatform(provider)
-        planner = platform.strategy.planner
+        planner = platform.dispatcher.planner
         self.assertIsInstance(planner.reasoner, HeuristicReasoner)
 
     def test_with_model_uses_enhanced_planner(self):
@@ -283,7 +283,7 @@ class TestPlatformWiring(unittest.TestCase):
         ])
         model = StaticReasoningModel({"select_worker_profile": {"profile": "network", "reason": "test"}})
         platform = CompetitionPlatform(provider, model=model)
-        planner = platform.strategy.planner
+        planner = platform.dispatcher.planner
         self.assertIsInstance(planner, EnhancedAPGPlanner)
         self.assertIsInstance(planner.reasoner, LLMReasoner)
 
@@ -303,8 +303,8 @@ class TestPlatformWiring(unittest.TestCase):
         reasoner = LLMReasoner(StaticReasoningModel({"select_worker_profile": {"profile": "network"}}))
         platform = CompetitionPlatform(provider, reasoner=reasoner)
         # model=None now also uses EnhancedAPGPlanner with heuristic free-exploration
-        self.assertIsInstance(platform.strategy.planner, EnhancedAPGPlanner)
-        self.assertIsInstance(platform.strategy.planner.reasoner, LLMReasoner)
+        self.assertIsInstance(platform.dispatcher.planner, EnhancedAPGPlanner)
+        self.assertIsInstance(platform.dispatcher.planner.reasoner, LLMReasoner)
 
 
 class TestTaskPrompts(unittest.TestCase):

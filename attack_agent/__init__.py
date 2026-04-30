@@ -2,7 +2,6 @@ from .platform import CompetitionPlatform
 from .reasoning import HeuristicReasoner, LLMReasoner, StaticReasoningModel, ReasoningModel
 from .constraints import (
     LightweightSecurityShell,
-    SecurityConstraints,
     ConstraintViolation,
     ValidationResult
 )
@@ -68,7 +67,6 @@ __all__ = [
     "StaticReasoningModel",
     "ReasoningModel",
     "LightweightSecurityShell",
-    "SecurityConstraints",
     "ConstraintViolation",
     "ValidationResult",
     "EnhancedAPGPlanner",

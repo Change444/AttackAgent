@@ -9,6 +9,7 @@
 
 | 版本 | 日期 | 变更说明 |
 |------|------|----------|
+| 4.1 | 2026-04-30 | Phase 4 架构清理：SecurityConstraints 删除→SecurityConfig 直接作为约束源（消除重复类+from_config桥接），SecurityConfig 新增 forbidden_primitive_combinations 字段；StrategyLayer 删除→Dispatcher 内联策略逻辑（stagnation/submit/stage），strategy.py 仅保留 SubmitClassifier+TaskPromptCompiler；ARCHITECTURE.md v4.1 对齐更新 |
 | 3.16 | 2026-04-29 | Phase 3 R11+R12 switch_path 真实逻辑 + 多族组合：EnhancedAPGPlanner.switch_path() 实现 STRUCTURED→FREE_EXPLORATION(停滞≥3时自动切换) + FREE_EXPLORATION→STRUCTURED(预算耗尽或置信度≥0.7时回切) + 停滞计数器(_stagnation_counters) + record_outcome() + PATH_SELECTION 事件记录 + stagnation reset，_compose_multi_family_candidates() 融合 2 族步骤(观察阶段用主族 + 操作阶段用副族 + 验证阶段用主族，副族得分≥0.7×主族得分时组合) + PlanCandidate.secondary_families + ProgramDecision.secondary_families + ActionProgram 融合描述/rationale + HeuristicFreeExplorationPlanner 多族融合 + DualPathConfig.path_switch_stagnation_threshold + DualPathConfig.multi_family_score_ratio + StrategyLayer.update_after_outcome 调用 record_outcome，12 项新测试(6 项 R11 + 6 项 R12)，330 测试通过 |
 | 3.15 | 2026-04-29 | Phase 3 R10 步骤参数注入：_inject_challenge_params() 在规划阶段注入 target URL 到 http-request(url)/browser-inspect(url)/session-materialize(login_url)/artifact-scan(url)/binary-inspect(url) 步骤模板(setdefault 不覆盖已有参数)，runtime _resolve_http_request_specs/_resolve_browser_inspect_specs/_resolve_session_materialize_specs 增加 bundle.target 回退(metadata+param_overrides 均空时)，APGPlanner._plan_candidates() + HeuristicFreeExplorationPlanner 调用注入，8 项注入单元测试 + 1 项 APG 集成测试 + 1 项启发式集成测试 + 3 项 runtime 回退测试，318 测试通过 |
 | 3.14 | 2026-04-29 | Phase 3 R9 扩展族关键词 6→14：新增 ssrf-server-boundary(ssrf/internal/proxy/metadata/9关键词) + ssti-template-boundary(ssti/jinja/mako/twig/10关键词) + csrf-state-boundary(csrf/cross-site/forgery/referer/8关键词) + idor-access-boundary(idor/insecure/privilege/uuid/10关键词) + crypto-math-boundary(rsa/aes/ecb/cbc/padding/oracle/16关键词) + pwn-memory-boundary(pwn/overflow/rop/gadget/13关键词) + protocol-logic-boundary(protocol/tcp/dns/mqtt/serialization/14关键词) + race-condition-boundary(race/concurrent/toctou/11关键词)，FAMILY_PROFILES + FAMILY_PROGRAMS 各 8 族 4 节点完整步骤，8 项族匹配测试 + 2 项启发式测试 + 14 族完整性 + 关键词重叠检查，305 测试通过 |
@@ -54,6 +55,9 @@
 | M17 | Phase 3 R10 步骤参数注入 | 2026-04-29 |
 | M18 | Phase 3 R11 switch_path 真实逻辑 | 2026-04-29 |
 | M19 | Phase 3 R12 多族组合 | 2026-04-29 |
+| M20 | Phase 4 R13 合并 SecurityConstraints → SecurityConfig | 2026-04-30 |
+| M21 | Phase 4 R14 更新 ARCHITECTURE.md 与代码对齐 | 2026-04-30 |
+| M22 | Phase 4 R15 简化 Dispatcher/StrategyLayer 间接层 | 2026-04-30 |
 
 ---
 
@@ -95,7 +99,7 @@
 | 模式图硬编码 | v3.5 | PatternInjector 回注动态模式到 PatternLibrary, APGPlanner._plan_candidates 使用动态族 |
 | LLM 无执行反馈闭环 | v3.4 | ObservationSummarizer + `_extract_current_state()` 输出实际观测内容 |
 | 原语未参数化 | v3.4 | `_resolve_*_specs()` 接受 `step.parameters` 覆盖, `_step_param_overrides()` helper |
-| SecurityConstraints 硬编码 | v3.1 | `SecurityConstraints.from_config(SecurityConfig)` 单一源, 默认值对齐 |
+| SecurityConstraints 硬编码 | v3.1→v4.1 | v3.1 `SecurityConstraints.from_config(SecurityConfig)` 单一源 → v4.1 SecurityConstraints 删除，SecurityConfig 直接作为 LightweightSecurityShell 约束源 |
 | 无 CLI 入口 | v3.2 | `__main__.py` 提供 `python -m attack_agent` 入口 |
 | 无启发式自由探索 | v3.5 | HeuristicFreeExplorationPlanner, model=None 时双路径自动切换 |
 | 停滞阈值/提交置信度硬编码 | v3.6 | StrategyLayer 构造参数化, stagnation_threshold→8, confidence_threshold→0.6, PlatformConfig 可配置 |
@@ -157,7 +161,7 @@
 |---|------|------|--------|
 | A1 | ~~原语双路径膨胀~~ → 已解决 | 每个原语有真实+回退两条路径，假数据掩盖能力不足 → v3.8 删除假数据路径，原语真执行或干净失败，runtime.py 1629→1502 行 | ~~高~~ → 已解决 |
 | A2 | 模式图过于静态 | PatternLibrary.build() 一次性构建，运行中只标记节点状态不重组 | 中 |
-| A3 | Dispatcher/Strategy 6 层间接调用 | 最终效果只是"选一个族模板执行它" | 低 |
+| A3 | ~~Dispatcher/Strategy 6 层间接调用~~ → 已解决 | StrategyLayer 是极薄 wrapper → v4.1 StrategyLayer 删除，Dispatcher 内联策略逻辑(stagnation/submit/stage)，strategy.py 仅保留 SubmitClassifier+TaskPromptCompiler | ~~低~~ → 已解决 |
 
 #### 当前能解 vs 不能解
 
@@ -227,15 +231,15 @@
 
 **Phase 3 目标已达成**：规划覆盖主流 CTF 类别，步骤不再只是空模板，路径可自动切换，多族组合增强策略覆盖。
 
-#### Phase 4：架构清理（P3，约 2 天）
+#### Phase 4：架构清理（P3，已完成 ✅）
 
-| # | 任务 | 工作量 | 交付物 |
-|---|------|--------|--------|
-| R13 | 合并 SecurityConstraints → SecurityConfig（消除重复） | 0.5 天 | 单一约束源 |
-| R14 | 更新 ARCHITECTURE.md 与代码对齐 | 0.5 天 | 文档-代码一致 |
-| R15 | 简化 Dispatcher/StrategyLayer 间接层 | 1 天 | 合并冗余层 |
+| # | 任务 | 工作量 | 交付物 | 完成日期 |
+|---|------|--------|--------|----------|
+| R13 | 合并 SecurityConstraints → SecurityConfig（消除重复） | 0.5 天 | 单一约束源 | 2026-04-30 |
+| R14 | 更新 ARCHITECTURE.md 与代码对齐 | 0.5 天 | 文档-代码一致 | 2026-04-30 |
+| R15 | 简化 Dispatcher/StrategyLayer 间接层 | 1 天 | 合并冗余层 | 2026-04-30 |
 
-**Phase 4 目标**：代码架构清晰，文档准确，无冗余间接层。
+**Phase 4 目标已达成**：代码架构清晰，文档准确，无冗余间接层。SecurityConstraints 删除，SecurityConfig 直接作为约束源；StrategyLayer 删除，Dispatcher 内联策略逻辑。
 
 ---
 

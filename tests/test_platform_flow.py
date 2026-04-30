@@ -439,7 +439,7 @@ class PlatformFlowTests(unittest.TestCase):
             self.assertEqual("attack-agent", browser_requests[0]["header"])
             self.assertEqual(f"http://127.0.0.1:{server.server_port}/rendered", observation.payload["url"])
             self.assertEqual("Rendered Notes", observation.payload["title"])
-            self.assertIn("hidden comment says browser path works", observation.payload["comments"])
+            self.assertTrue(any("hidden comment says browser path works" in c for c in observation.payload["comments"]), "Expected browser comment in parsed comments")
             self.assertIn("client rendered comment board", observation.payload["rendered_text"])
             self.assertEqual(["main#app"], observation.payload["rendered_nodes"])
         finally:

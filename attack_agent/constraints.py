@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from collections import Counter
 from urllib.parse import urlparse
 
+from .config import SecurityConfig
 from .platform_models import ActionProgram, TaskBundle, WorkerProfile
 
 
@@ -28,52 +29,11 @@ class ValidationResult:
     violations: list[ConstraintViolation]
 
 
-@dataclass(slots=True)
-class SecurityConstraints:
-    """安全约束配置（轻量级，只包含核心安全项）
-
-    默认值与 AttackAgentConfig.security (SecurityConfig) 保持一致。
-    可通过 from_config() 从 SecurityConfig 构建，确保配置系统与运行时约束单一真实源。
-    """
-    # 目标范围限制
-    allowed_hostpatterns: list[str] = None  # ["127.0.0.1", "localhost"]
-
-    # 原始动作使用限制
-    max_http_requests: int = 30
-    max_sandbox_executions: int = 5
-    forbidden_primitive_combinations: list[tuple[str, str]] = None
-
-    # 结构限制
-    max_program_steps: int = 15
-    require_observation_before_action: bool = True
-
-    # 资源限制
-    max_estimated_cost: float = 50.0
-
-    def __post_init__(self):
-        if self.allowed_hostpatterns is None:
-            self.allowed_hostpatterns = ["127.0.0.1", "localhost"]
-        if self.forbidden_primitive_combinations is None:
-            self.forbidden_primitive_combinations = []
-
-    @classmethod
-    def from_config(cls, security_config: SecurityConfig) -> SecurityConstraints:
-        """从 SecurityConfig 构建安全约束，确保配置文件驱动的约束值"""
-        return cls(
-            allowed_hostpatterns=list(security_config.allowed_hostpatterns),
-            max_http_requests=security_config.max_http_requests,
-            max_sandbox_executions=security_config.max_sandbox_executions,
-            max_program_steps=security_config.max_program_steps,
-            require_observation_before_action=security_config.require_observation_before_action,
-            max_estimated_cost=security_config.max_estimated_cost,
-        )
-
-
 class LightweightSecurityShell:
-    """轻量级安全壳验证器"""
+    """轻量级安全壳验证器 — 直接使用 SecurityConfig 作为约束源"""
 
-    def __init__(self, constraints: SecurityConstraints | None = None):
-        self.constraints = constraints or SecurityConstraints()
+    def __init__(self, security_config: SecurityConfig | None = None):
+        self.security_config = security_config or SecurityConfig()
 
     def validate(self, bundle: TaskBundle) -> ValidationResult:
         """快速验证TaskBundle是否满足安全约束"""
@@ -119,7 +79,7 @@ class LightweightSecurityShell:
 
         # 对于其他协议，检查hostname是否在允许范围内
         if parsed.hostname:
-            if parsed.hostname not in self.constraints.allowed_hostpatterns:
+            if parsed.hostname not in self.security_config.allowed_hostpatterns:
                 violations.append(ConstraintViolation(
                     constraint_type="target_scope",
                     severity="critical",
@@ -134,14 +94,14 @@ class LightweightSecurityShell:
         primitives = [step.primitive for step in bundle.action_program.steps]
         counts = Counter(primitives)
 
-        if counts.get("http-request", 0) > self.constraints.max_http_requests:
+        if counts.get("http-request", 0) > self.security_config.max_http_requests:
             violations.append(ConstraintViolation(
                 constraint_type="primitive_count",
                 severity="warning",
                 message=f"http-request调用次数过多: {counts['http-request']}"
             ))
 
-        if counts.get("code-sandbox", 0) > self.constraints.max_sandbox_executions:
+        if counts.get("code-sandbox", 0) > self.security_config.max_sandbox_executions:
             violations.append(ConstraintViolation(
                 constraint_type="primitive_count",
                 severity="warning",
@@ -154,7 +114,7 @@ class LightweightSecurityShell:
         """检查程序结构"""
         violations = []
 
-        if len(bundle.action_program.steps) > self.constraints.max_program_steps:
+        if len(bundle.action_program.steps) > self.security_config.max_program_steps:
             violations.append(ConstraintViolation(
                 constraint_type="program_structure",
                 severity="warning",
@@ -167,10 +127,9 @@ class LightweightSecurityShell:
         """检查操作顺序（先观察后行动）"""
         violations = []
 
-        if not self.constraints.require_observation_before_action:
+        if not self.security_config.require_observation_before_action:
             return violations
 
-        # 简单模式：确保在exploitation动作之前有observation
         observation_primitives = {"http-request", "browser-inspect", "artifact-scan", "binary-inspect"}
         action_primitives = {"code-sandbox"}
 
@@ -197,7 +156,6 @@ class LightweightSecurityShell:
         """检查资源限制"""
         violations = []
 
-        # 快速成本估算
         cost_map = {
             "http-request": 1.0,
             "browser-inspect": 1.4,
@@ -214,7 +172,7 @@ class LightweightSecurityShell:
             for step in bundle.action_program.steps
         )
 
-        if estimated_cost > self.constraints.max_estimated_cost:
+        if estimated_cost > self.security_config.max_estimated_cost:
             violations.append(ConstraintViolation(
                 constraint_type="resource_limit",
                 severity="warning",
@@ -228,7 +186,7 @@ class LightweightSecurityShell:
         violations = []
         primitives = [step.primitive for step in bundle.action_program.steps]
 
-        for combo in self.constraints.forbidden_primitive_combinations:
+        for combo in self.security_config.forbidden_primitive_combinations:
             if all(p in primitives for p in combo):
                 violations.append(ConstraintViolation(
                     constraint_type="forbidden_combination",
@@ -256,12 +214,11 @@ class LightweightSecurityShell:
                 value = step.parameters.get(key)
                 if not value or not isinstance(value, str):
                     continue
-                # Check path-only values (like /login) — these inherit from bundle.target, ok
                 if not value.startswith(("http://", "https://")):
                     continue
                 parsed = urlparse(value)
                 hostname = parsed.hostname
-                if hostname and hostname not in self.constraints.allowed_hostpatterns:
+                if hostname and hostname not in self.security_config.allowed_hostpatterns:
                     violations.append(ConstraintViolation(
                         constraint_type="parameter_scope",
                         severity="critical",

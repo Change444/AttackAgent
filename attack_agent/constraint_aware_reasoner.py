@@ -10,7 +10,8 @@ from .platform_models import (
     PrimitiveActionStep,
     WorkerProfile,
 )
-from .constraints import LightweightSecurityShell, SecurityConstraints
+from .config import SecurityConfig
+from .constraints import LightweightSecurityShell
 from .reasoning import ReasoningModel
 from .observation_summarizer import ObservationSummarizer
 
@@ -147,8 +148,8 @@ _PRIMITIVE_PARAM_KEYS: dict[str, set[str]] = {
 class ConstraintContextBuilder:
     """约束上下文构建器"""
 
-    def __init__(self, security_constraints: SecurityConstraints) -> None:
-        self.security_constraints = security_constraints
+    def __init__(self, security_config: SecurityConfig) -> None:
+        self.security_config = security_config
 
     def build(self, context: PlanningContext) -> ConstraintContext:
         """从规划上下文和安全约束构建约束上下文"""
@@ -165,12 +166,12 @@ class ConstraintContextBuilder:
             primitive_descriptions=dict(PRIMITIVE_DESCRIPTIONS),
             target_scope=target,
             safety_rules=list(SAFETY_RULES_TEMPLATE),
-            max_steps=self.security_constraints.max_program_steps,
+            max_steps=self.security_config.max_program_steps,
             required_phases=["侦察", "利用"],
-            max_estimated_cost=self.security_constraints.max_estimated_cost,
+            max_estimated_cost=self.security_config.max_estimated_cost,
             time_budget_seconds=300,
             attack_phases=ATTACK_PHASES,
-            observation_before_action=self.security_constraints.require_observation_before_action,
+            observation_before_action=self.security_config.require_observation_before_action,
             success_criteria=f"找到匹配模式 {challenge.flag_pattern} 的flag",
         )
 

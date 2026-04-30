@@ -182,9 +182,10 @@ class _StaticHTMLHandler(http.server.BaseHTTPRequestHandler):
 
 class _JSRenderHandler(http.server.BaseHTTPRequestHandler):
     """Serves HTML with JS that dynamically adds content."""
-    PAGE = b"""<html><head><title>JS Test</title>
+    PAGE = b"""<html><head><title>JS Test</title></head>
+<body><div id="dynamic"></div>
 <script>document.getElementById('dynamic').textContent = 'flag{js_rendered}';</script>
-</head><body><div id="dynamic"></div></body></html>"""
+</body></html>"""
 
     def do_GET(self):
         self.send_response(200)

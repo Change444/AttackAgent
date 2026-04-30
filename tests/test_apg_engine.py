@@ -11,7 +11,8 @@ from attack_agent.enhanced_apg import EnhancedAPGPlanner
 from attack_agent.semantic_retrieval import SemanticRetrievalEngine
 from attack_agent.dynamic_pattern_composer import DynamicPatternComposer
 from attack_agent.heuristic_free_exploration import HeuristicFreeExplorationPlanner
-from attack_agent.constraints import LightweightSecurityShell, SecurityConstraints
+from attack_agent.constraints import LightweightSecurityShell
+from attack_agent.config import SecurityConfig
 
 
 class APGEngineTests(unittest.TestCase):
@@ -445,10 +446,10 @@ class APGEngineTests(unittest.TestCase):
         memory = EpisodeMemory()
         pattern_library = PatternLibrary()
         structured = APGPlanner(memory, pattern_library)
-        constraints = SecurityConstraints()
-        shell = LightweightSecurityShell(constraints)
+        security_config = SecurityConfig()
+        shell = LightweightSecurityShell(security_config)
         from attack_agent.constraint_aware_reasoner import ConstraintContextBuilder
-        builder = ConstraintContextBuilder(constraints)
+        builder = ConstraintContextBuilder(security_config)
         composer = DynamicPatternComposer()
         free = HeuristicFreeExplorationPlanner(builder, shell, composer, memory)
         semantic = SemanticRetrievalEngine()
@@ -724,11 +725,11 @@ class APGEngineTests(unittest.TestCase):
         """R12: HeuristicFreeExplorationPlanner produces programs combining 2 top families"""
         from attack_agent.heuristic_free_exploration import HeuristicFreeExplorationPlanner
         from attack_agent.constraint_aware_reasoner import ConstraintContextBuilder
-        from attack_agent.constraints import SecurityConstraints
+        from attack_agent.config import SecurityConfig
 
-        constraints = SecurityConstraints()
-        builder = ConstraintContextBuilder(constraints)
-        shell = LightweightSecurityShell(constraints)
+        security_config = SecurityConfig()
+        builder = ConstraintContextBuilder(security_config)
+        shell = LightweightSecurityShell(security_config)
         composer = DynamicPatternComposer()
         memory = EpisodeMemory()
         free_planner = HeuristicFreeExplorationPlanner(builder, shell, composer, memory)
