@@ -70,6 +70,7 @@ class ModelConfig:
     timeout_seconds: int = 30
     max_retries: int = 2
     observation_summary_budget_chars: int = 2000
+    enable_thinking: bool = False
 
 
 @dataclass(slots=True)

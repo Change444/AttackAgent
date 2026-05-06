@@ -25,9 +25,21 @@ class Dispatcher:
         self.stagnation_threshold = stagnation_threshold
         self.task_compiler = TaskPromptCompiler()
         self.submit_classifier = SubmitClassifier(confidence_threshold)
+        self._cycle_counters: dict[str, int] = {}
 
     def schedule(self, project_id: str) -> None:
         record = self.state_graph.projects[project_id]
+
+        # ── Cycle trace header ──────────────────────────────────────────
+        self._cycle_counters[project_id] = self._cycle_counters.get(project_id, 0) + 1
+        cycle = self._cycle_counters[project_id]
+        ch = record.snapshot.challenge
+        print(f"\n{'═' * 70}", flush=True)
+        print(f"  CYCLE #{cycle} | Project: {project_id} | {ch.name} ({ch.category})", flush=True)
+        print(f"  Stage: {record.snapshot.stage.value} | Stagnation: {record.stagnation_counter}", flush=True)
+        print(f"{'═' * 70}", flush=True)
+        # ────────────────────────────────────────────────────────────────
+
         if record.snapshot.stage == ProjectStage.BOOTSTRAP:
             profile, _reason = self.planner.reasoner.choose_profile(record.snapshot)
             record.snapshot.worker_profile = profile
@@ -42,7 +54,20 @@ class Dispatcher:
         program, memory_hits = self.planner.plan(record)
         if program is None:
             record.snapshot.stage = ProjectStage.CONVERGE
+            print(f"  >> No program produced — converging", flush=True)
             return
+
+        # ── Trace program ───────────────────────────────────────────────
+        print(f"  Path: {self.planner._current_paths.get(project_id, 'N/A')}", flush=True)
+        print(f"  Program: {program.id} | Goal: {program.goal}", flush=True)
+        print(f"  Source: {getattr(program, 'planner_source', 'N/A')} | Profile: {program.required_profile.value}", flush=True)
+        print(f"  Steps ({len(program.steps)}):", flush=True)
+        for i, s in enumerate(program.steps):
+            print(f"    {i+1}. {s.primitive}: {s.instruction[:120]}", flush=True)
+        if program.rationale:
+            print(f"  Rationale: {program.rationale[:300]}", flush=True)
+        print(f"  ───────────────────────────", flush=True)
+        # ────────────────────────────────────────────────────────────────
         record.snapshot.worker_profile = program.required_profile
         worker = self.assign_worker(project_id)
         visible_primitives = self.runtime.registry.visible_primitives(program.required_profile)
@@ -78,6 +103,17 @@ class Dispatcher:
             return  # 静默阻止，记录已通过事件系统
 
         events, outcome = self.runtime.run_task(bundle)
+
+        # ── Trace execution outcome ─────────────────────────────────────
+        print(f"  Execution: {outcome.status} | Novelty: {outcome.novelty:.2f} | Cost: {outcome.cost:.2f}", flush=True)
+        if outcome.candidate_flags:
+            print(f"  Candidate flags: {outcome.candidate_flags}", flush=True)
+        if outcome.failure_reason:
+            print(f"  Failure: {outcome.failure_reason}", flush=True)
+        obs_count = sum(1 for e in events if e.type == EventType.OBSERVATION)
+        print(f"  Events: {len(events)} ({obs_count} observations)", flush=True)
+        print(f"{'─' * 70}", flush=True)
+        # ────────────────────────────────────────────────────────────────
         self.heartbeat(worker.worker_id)
         self.state_graph.record_program(project_id, program, outcome)
         for event in events:

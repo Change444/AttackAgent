@@ -545,6 +545,8 @@ class APGPlanner:
 
     def update_graph(self, record, program: ActionProgram, outcome: ActionOutcome) -> None:
         for node_id in program.pattern_nodes:
+            if node_id not in record.pattern_graph.nodes:
+                continue
             node = record.pattern_graph.nodes[node_id]
             if outcome.status == "ok" and (outcome.novelty > 0.0 or outcome.candidate_flags):
                 node.status = "resolved"
@@ -715,7 +717,7 @@ def build_episode_entry(record, program: ActionProgram, outcome: ActionOutcome, 
     return EpisodeEntry(
         id=new_id("episode"),
         feature_text=feature_text,
-        pattern_families=list({record.pattern_graph.nodes[node_id].family for node_id in program.pattern_nodes}),
+        pattern_families=list({record.pattern_graph.nodes[node_id].family for node_id in program.pattern_nodes if node_id in record.pattern_graph.nodes}) if record.pattern_graph else [],
         summary=f"{program.goal} -> {outcome.status}{key_findings}",
         success=bool(outcome.candidate_flags or outcome.novelty > 0.0),
         stop_reason=stop_reason,

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 import time
 from typing import Any
 
@@ -77,6 +78,16 @@ def _resolve_api_key(config: ModelConfig) -> str:
     raise ValueError("no api_key or api_key_env configured for non-heuristic provider")
 
 
+def _safe_print(text: str) -> None:
+    """Print text safely, replacing characters the terminal can't encode."""
+    try:
+        print(text, flush=True)
+    except UnicodeEncodeError:
+        encoding = getattr(sys.stdout, "encoding", "utf-8") or "utf-8"
+        safe = text.encode(encoding, errors="replace").decode(encoding)
+        print(safe, flush=True)
+
+
 def _extract_json_from_text(text: str) -> dict[str, Any]:
     """Robustly extract a JSON dict from model response text."""
     # Try direct parse
@@ -126,7 +137,7 @@ class OpenAIReasoningModel:
         client_kwargs: dict[str, Any] = {"api_key": api_key}
         if config.base_url:
             client_kwargs["base_url"] = config.base_url
-        self._client = _openai_module.OpenAI(**client_kwargs)
+        self._client = _openai_module.OpenAI(**client_kwargs, max_retries=0)
         self._model = config.model_name or "gpt-4o"
 
     def complete_json(self, task: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -135,6 +146,20 @@ class OpenAIReasoningModel:
             user_content = str(payload.get("prompt", ""))
         else:
             user_content = json.dumps(payload, ensure_ascii=False, indent=2)
+
+        # ── Verbose LLM trace ──────────────────────────────────────────
+        banner = f"╔══ LLM CALL: {task} ══"
+        _safe_print(f"\n{banner}")
+        _safe_print(f"║ Model: {self._model}")
+        _safe_print(f"║ System: {system_prompt[:200]}...")
+        if len(user_content) > 2000:
+            _safe_print(f"║ User prompt ({len(user_content)} chars, truncated):")
+            _safe_print(f"║ {user_content[:1500]}...")
+        else:
+            _safe_print(f"║ User prompt ({len(user_content)} chars):")
+            _safe_print(f"║ {user_content}")
+        _safe_print(f"╚{'═' * (len(banner) - 2)}╝")
+        # ────────────────────────────────────────────────────────────────
 
         for attempt in range(self._config.max_retries + 1):
             try:
@@ -150,7 +175,15 @@ class OpenAIReasoningModel:
                     timeout=self._config.timeout_seconds,
                 )
                 text = response.choices[0].message.content or ""
-                return _extract_json_from_text(text)
+                result = _extract_json_from_text(text)
+
+                # ── Verbose LLM response trace ─────────────────────────
+                _safe_print(f"\n>>> LLM RESPONSE ({task}):")
+                _safe_print(f"{json.dumps(result, ensure_ascii=False, indent=2)}")
+                _safe_print(f"--- end response ---\n")
+                # ────────────────────────────────────────────────────────
+
+                return result
             except _openai_module.RateLimitError:
                 if attempt < self._config.max_retries:
                     time.sleep(2 ** attempt)
@@ -175,10 +208,13 @@ class AnthropicReasoningModel:
         assert _anthropic_module is not None
         self._config = config
         api_key = _resolve_api_key(config)
+        # Clear conflicting Anthropic env vars so SDK uses only the configured key
+        for env_key in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"):
+            os.environ.pop(env_key, None)
         client_kwargs: dict[str, Any] = {"api_key": api_key}
         if config.base_url:
             client_kwargs["base_url"] = config.base_url
-        self._client = _anthropic_module.Anthropic(**client_kwargs)
+        self._client = _anthropic_module.Anthropic(max_retries=0, **client_kwargs)
         self._model = config.model_name or "claude-sonnet-4-20250514"
 
     def complete_json(self, task: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -188,21 +224,67 @@ class AnthropicReasoningModel:
         else:
             user_content = json.dumps(payload, ensure_ascii=False, indent=2)
 
+        # ── Verbose LLM trace ──────────────────────────────────────────
+        banner = f"╔══ LLM CALL: {task} ══"
+        _safe_print(f"\n{banner}")
+        _safe_print(f"║ Model: {self._model}")
+        _safe_print(f"║ System: {system_prompt[:300]}")
+        if len(user_content) > 2000:
+            _safe_print(f"║ User prompt ({len(user_content)} chars, truncated):")
+            _safe_print(f"║ {user_content[:1500]}...")
+        else:
+            _safe_print(f"║ User prompt ({len(user_content)} chars):")
+            _safe_print(f"║ {user_content}")
+        _safe_print(f"╚{'═' * (len(banner) - 2)}╝")
+        # ────────────────────────────────────────────────────────────────
+
         for attempt in range(self._config.max_retries + 1):
             try:
-                response = self._client.messages.create(
-                    model=self._model,
-                    max_tokens=self._config.max_tokens,
-                    system=system_prompt,
-                    messages=[{"role": "user", "content": user_content}],
-                    temperature=self._config.temperature,
-                    timeout=self._config.timeout_seconds,
-                )
+                create_kwargs: dict[str, Any] = {
+                    "model": self._model,
+                    "max_tokens": self._config.max_tokens,
+                    "system": system_prompt,
+                    "messages": [{"role": "user", "content": user_content}],
+                    "timeout": self._config.timeout_seconds,
+                }
+                if self._config.enable_thinking:
+                    create_kwargs["thinking"] = {"type": "enabled", "budget_tokens": min(self._config.max_tokens // 3, 2048)}
+                    create_kwargs["temperature"] = 1  # Required when thinking is enabled
+                else:
+                    create_kwargs["temperature"] = self._config.temperature
+                response = self._client.messages.create(**create_kwargs)
                 text = ""
+                thinking_text = ""
                 for block in response.content:
                     if block.type == "text":
                         text += block.text
-                return _extract_json_from_text(text)
+                    elif block.type == "thinking":
+                        thinking_text += getattr(block, "thinking", "") or ""
+
+                # If thinking consumed all output budget and no text was produced,
+                # re-request without thinking to get the actual JSON response.
+                if not text and thinking_text and self._config.enable_thinking:
+                    _safe_print("  >> Thinking consumed output budget; re-requesting without thinking")
+                    no_thinking_kwargs = dict(create_kwargs)
+                    no_thinking_kwargs.pop("thinking", None)
+                    no_thinking_kwargs["temperature"] = self._config.temperature
+                    retry_response = self._client.messages.create(**no_thinking_kwargs)
+                    for block in retry_response.content:
+                        if block.type == "text":
+                            text += block.text
+
+                if not text:
+                    raise RuntimeError("model_adapter_empty_response")
+
+                result = _extract_json_from_text(text)
+
+                # ── Verbose LLM response trace ─────────────────────────
+                _safe_print(f"\n>>> LLM RESPONSE ({task}):")
+                _safe_print(f"{json.dumps(result, ensure_ascii=False, indent=2)}")
+                _safe_print(f"--- end response ---\n")
+                # ────────────────────────────────────────────────────────
+
+                return result
             except _anthropic_module.RateLimitError:
                 if attempt < self._config.max_retries:
                     time.sleep(2 ** attempt)

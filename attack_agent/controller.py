@@ -74,5 +74,8 @@ class Controller:
                     source="controller",
                 )
             )
-            self.provider.stop_challenge(record.snapshot.instance.instance_id)
+            try:
+                self.provider.stop_challenge(record.snapshot.instance.instance_id)
+            except Exception:
+                pass  # stop_challenge is optional; some providers don't support it
         return payload

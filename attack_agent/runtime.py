@@ -1152,6 +1152,12 @@ def _resolve_session_materialize_specs(step: PrimitiveActionStep, bundle: TaskBu
 def _execute_structured_parse(step: PrimitiveActionStep, bundle: TaskBundle) -> ActionOutcome:
     parse_source = step.parameters.get("parse_source")
     fmt = step.parameters.get("format")
+    # Auto-detect: use most recent observation if parse_source not given
+    if parse_source is None and bundle.completed_observations:
+        recent = list(bundle.completed_observations.values())[-1]
+        parse_source = recent.id
+    if fmt is None:
+        fmt = "json"
     if parse_source is None or fmt is None:
         return _clean_fail("structured-parse")
     source_id = str(parse_source)
@@ -1468,7 +1474,10 @@ def _extract_text_preview(raw_bytes: bytes, preview_bytes: int) -> str:
 def _execute_code_sandbox(step: PrimitiveActionStep, bundle: TaskBundle, sandbox: CodeSandbox) -> ActionOutcome:
     program_fragment = str(step.parameters.get("program_fragment", "") or bundle.instance.metadata.get("sandbox_program", "result = {'texts': []}"))
     inputs = dict(bundle.instance.metadata.get("sandbox_inputs", {}))
-    result = sandbox.execute(program_fragment, inputs)
+    try:
+        result = sandbox.execute(program_fragment, inputs)
+    except RuntimeError:
+        return _clean_fail("code-sandbox")
     observations: list[Observation] = []
     artifacts: list[Artifact] = []
     candidate_flags: list[CandidateFlag] = []
