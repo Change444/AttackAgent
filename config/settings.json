@@ -9,7 +9,8 @@
     "temperature": 0.3,
     "max_tokens": 1024,
     "timeout_seconds": 30,
-    "max_retries": 2
+    "max_retries": 2,
+    "enable_thinking": false
   },
   "platform": {
     "max_cycles": 50,

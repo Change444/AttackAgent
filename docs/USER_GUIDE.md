@@ -233,6 +233,34 @@ python -m attack_agent --model anthropic --verbose
 }
 ```
 
+#### Thinking Model 支持
+
+Anthropic 适配器支持 extended thinking（推理模型先进行内部推理再输出 JSON）。启用后可提升复杂推理质量，但需要注意：
+
+- **配置字段**：`enable_thinking: true`
+- **budget_tokens**：自动计算为 `min(max_tokens // 3, 2048)`
+- **temperature**：thinking 启用时 SDK 强制要求 `temperature=1`
+- **自动回退**：如果 thinking 消耗了全部 output budget（无 text 输出），适配器会自动去掉 thinking 参数重新请求
+
+配置示例（Xiaomi mimo-v2.5-pro）：
+
+```json
+{
+  "model": {
+    "provider": "anthropic",
+    "model_name": "mimo-v2.5-pro",
+    "api_key": "your-api-key",
+    "base_url": "https://token-plan-cn.xiaomimimo.com/anthropic",
+    "max_tokens": 8192,
+    "enable_thinking": true
+  }
+}
+```
+
+> **注意**：thinking 模型会增加 API 响应延迟（budget_tokens 越大延迟越高）。建议 `max_tokens` 至少 4096 以留足 text 输出空间。如果频繁出现"thinking consumed output budget"回退，可适当增大 `max_tokens`。
+
+> **环境变量冲突**：Anthropic SDK 自动读取 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL` 环境变量。如果这些变量残留旧值，可能与配置文件中的 `api_key`/`base_url` 冲突导致 401 错误。适配器会在初始化时自动清除这些环境变量，但如果手动设置过请确保值正确。
+
 ### 4.5 API Key 设置
 
 三种方式（优先级从高到低）：
@@ -269,6 +297,7 @@ $env:ANTHROPIC_API_KEY = "sk-ant-..."
 | `timeout_seconds` | `30` | 单次请求超时 |
 | `max_retries` | `2` | 限流/连接错误最大重试次数 |
 | `observation_summary_budget_chars` | `2000` | LLM 上下文中观测摘要的字符预算 |
+| `enable_thinking` | `false` | Anthropic thinking model 开关（启用后 budget_tokens=min(max_tokens//3,2048)） |
 
 ---
 
@@ -361,6 +390,36 @@ python -m attack_agent --challenges-file my_challenges.json
 | `description` | 否 | `""` | 题目描述 |
 | `flag_pattern` | 否 | `flag\{[^}]+\}` | flag 正则匹配模式 |
 | `metadata` | 否 | `{}` | 额外信息（flag、hint、hint_budget 等） |
+
+### 5.5 本地靶场测试
+
+项目自带本地靶场服务器，包含 4 个 CTF 挑战（2 easy + 2 medium），可用于快速验证解题能力：
+
+```bash
+# 启动靶场服务器
+python scripts/local_range.py
+# 或指定端口
+python scripts/local_range.py --port 9999
+```
+
+| 题目 ID | 名称 | 难度 | 测试原语 |
+|---------|------|------|---------|
+| web-auth-easy | Login Portal | easy | session-materialize + http-request |
+| web-render-easy | Hidden Comments | easy | browser-inspect（HTML 注释提取） |
+| web-encoding-medium | Base64 Cookie | medium | http-request + code-sandbox（base64） |
+| web-chain-medium | Multi-Step API | medium | http-request chain + structured-parse |
+
+靶场实现完整的 CompetitionProvider REST API（`/challenges`、`/start_challenge`、`/submit`、`/hint`），同时在同一端口上提供挑战页面。浏览器访问 `http://127.0.0.1:8484` 可查看所有题目。
+
+运行 AttackAgent 对接本地靶场：
+
+```bash
+# 纯规则模式
+python -m attack_agent --provider-url http://127.0.0.1:8484 --verbose
+
+# LLM 模式
+python -m attack_agent --config config/local-openai-compatible.json --provider-url http://127.0.0.1:8484 --verbose
+```
 
 ---
 
@@ -541,6 +600,41 @@ SecurityShell: critical violation — target host not in allowed patterns
 ```bash
 python -m attack_agent --confidence-threshold 0.4 --verbose
 ```
+
+### Windows 终端 UnicodeEncodeError
+
+Windows PowerShell 默认使用 GBK 编码，LLM 返回文本可能包含 GBK 无法编码的字符。系统内置 `_safe_print()` 自动处理此问题（替换不可编码字符），无需手动干预。
+
+### Anthropic 环境变量冲突 401
+
+如果系统环境变量 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN` 或 `ANTHROPIC_BASE_URL` 残留旧值，Anthropic SDK 会自动读取并添加冲突的 Bearer header，导致 401 Unauthorized。适配器在初始化时自动清除这些环境变量。如果仍有问题，手动清除：
+
+```bash
+# Linux/Mac
+unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL
+
+# Windows PowerShell
+Remove-Item Env:\ANTHROPIC_API_KEY
+Remove-Item Env:\ANTHROPIC_AUTH_TOKEN
+Remove-Item Env:\ANTHROPIC_BASE_URL
+```
+
+### Thinking model 无 text 输出
+
+某些 thinking 模型（如 mimo-v2.5-pro）可能消耗全部 output budget 于 thinking，不产生 text block。适配器自动 re-request（去掉 thinking 参数）获取 JSON 输出。如果频繁触发回退，增大 `max_tokens`：
+
+```json
+{
+  "model": {
+    "max_tokens": 8192,
+    "enable_thinking": true
+  }
+}
+```
+
+### code-sandbox RuntimeError
+
+LLM 生成的代码可能使用不允许的 Python 语法（如 `lambda`、`global`、`async`）。系统自动捕获 RuntimeError 并返回 `_clean_fail("code-sandbox")`，不会崩溃。可在 verbose 日志中查看具体失败原因。
 
 ### 解题率低的原因分析
 

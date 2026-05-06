@@ -50,7 +50,7 @@ platform.solve_all()
 |------|------|------|
 | CompetitionPlatform | `platform.py` | 主入口，model=None/xxx 分支构建不同规划器 |
 | CLI | `__main__.py` | `python -m attack_agent` 命令行接口 |
-| Dispatcher | `dispatcher.py` | 状态机调度，策略逻辑（stagnation/submit/stage） |
+| Dispatcher | `dispatcher.py` | 状态机调度，策略逻辑（stagnation/submit/stage），cycle/program/outcome trace |
 | EnhancedAPGPlanner | `enhanced_apg.py` | 双路径规划 |
 | ConstraintAwareReasoner | `constraint_aware_reasoner.py` | LLM 约束推理 |
 | HeuristicFreeExplorationPlanner | `heuristic_free_exploration.py` | 无 LLM 自由探索 |
@@ -66,6 +66,8 @@ platform.solve_all()
 | SubmitClassifier / TaskPromptCompiler | `strategy.py` | 提交分类 + 任务编译 |
 | ObservationSummarizer | `observation_summarizer.py` | 观测→有限长度文本 |
 | AttackAgentConfig | `config.py` | JSON + dataclass 配置 |
+| OpenAI/Anthropic ReasoningModel | `model_adapter.py` | LLM 适配器（thinking model + verbose trace + GBK safe_print） |
+| Local CTF Range | `scripts/local_range.py` | 本地靶场服务器（4 题） |
 
 ## Key Rules
 
@@ -87,10 +89,12 @@ platform.solve_all()
 
 ## Known Limitations (摘要)
 
-当前系统**解题率约 25-30%**（已可连接真实 CTFd 靶场）。关键差距：
+当前系统**解题率约 25-30%**（已成功对接本地靶场解题 web-render-easy）。关键差距：
 - browser-inspect 不执行 JS、session-materialize 无多步认证 → web 题 70% 不能解
 - code-sandbox 仍禁止 lambda + 无 crypto 库 → 高级密码题不能解（class/with/raise + zlib/csv 已放开）
 - parse_source/program_fragment 仍需 metadata 或 LLM 提供（14 族关键词已覆盖主流 CTF 类别；URL/login_url 注入已实现；多族组合已实现；路径自动切换已实现）
+
+**本地靶场测试**：`python scripts/local_range.py` 启动 4 题（web-auth-easy/web-render-easy/web-encoding-medium/web-chain-medium）
 
 **完整问题清单 + 四阶段解决计划**：见 [docs/CHANGELOG.md](docs/CHANGELOG.md) "Current Limitations & Roadmap" 章节
 

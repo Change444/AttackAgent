@@ -9,6 +9,7 @@
 
 | 版本 | 日期 | 变更说明 |
 |------|------|----------|
+| 4.2 | 2026-05-06 | 真实 CTF 靶场联调：thinking model 支持（Anthropic enable_thinking + budget_tokens + thinking 耗尽 output budget 时自动 re-request），verbose LLM trace 日志（╔══ LLM CALL ══ banner + response trace），dispatcher cycle/program/outcome trace，Windows GBK safe_print（_safe_print 替换 print 防止 UnicodeEncodeError），健壮性修复（apg.py KeyError free_exploration 节点、controller.py stop_challenge try-except、runtime.py code-sandbox RuntimeError catch + structured-parse 自动检测最近观测、model_adapter.py 清除冲突 Anthropic 环境变量防 401 + SDK max_retries=0 防长重试挂起 + empty_response 检测），ModelConfig 新增 enable_thinking 字段，本地 CTF 靶场服务器 scripts/local_range.py（4 题：web-auth-easy/web-render-easy/web-encoding-medium/web-chain-medium），AGENTS.md。成功解题 web-render-easy（Hidden Comments：flag{hidden_in_comments_042}） |
 | 4.1 | 2026-04-30 | Phase 4 架构清理：SecurityConstraints 删除→SecurityConfig 直接作为约束源（消除重复类+from_config桥接），SecurityConfig 新增 forbidden_primitive_combinations 字段；StrategyLayer 删除→Dispatcher 内联策略逻辑（stagnation/submit/stage），strategy.py 仅保留 SubmitClassifier+TaskPromptCompiler；ARCHITECTURE.md v4.1 对齐更新 |
 | 3.16 | 2026-04-29 | Phase 3 R11+R12 switch_path 真实逻辑 + 多族组合：EnhancedAPGPlanner.switch_path() 实现 STRUCTURED→FREE_EXPLORATION(停滞≥3时自动切换) + FREE_EXPLORATION→STRUCTURED(预算耗尽或置信度≥0.7时回切) + 停滞计数器(_stagnation_counters) + record_outcome() + PATH_SELECTION 事件记录 + stagnation reset，_compose_multi_family_candidates() 融合 2 族步骤(观察阶段用主族 + 操作阶段用副族 + 验证阶段用主族，副族得分≥0.7×主族得分时组合) + PlanCandidate.secondary_families + ProgramDecision.secondary_families + ActionProgram 融合描述/rationale + HeuristicFreeExplorationPlanner 多族融合 + DualPathConfig.path_switch_stagnation_threshold + DualPathConfig.multi_family_score_ratio + StrategyLayer.update_after_outcome 调用 record_outcome，12 项新测试(6 项 R11 + 6 项 R12)，330 测试通过 |
 | 3.15 | 2026-04-29 | Phase 3 R10 步骤参数注入：_inject_challenge_params() 在规划阶段注入 target URL 到 http-request(url)/browser-inspect(url)/session-materialize(login_url)/artifact-scan(url)/binary-inspect(url) 步骤模板(setdefault 不覆盖已有参数)，runtime _resolve_http_request_specs/_resolve_browser_inspect_specs/_resolve_session_materialize_specs 增加 bundle.target 回退(metadata+param_overrides 均空时)，APGPlanner._plan_candidates() + HeuristicFreeExplorationPlanner 调用注入，8 项注入单元测试 + 1 项 APG 集成测试 + 1 项启发式集成测试 + 3 项 runtime 回退测试，318 测试通过 |
@@ -58,6 +59,7 @@
 | M20 | Phase 4 R13 合并 SecurityConstraints → SecurityConfig | 2026-04-30 |
 | M21 | Phase 4 R14 更新 ARCHITECTURE.md 与代码对齐 | 2026-04-30 |
 | M22 | Phase 4 R15 简化 Dispatcher/StrategyLayer 间接层 | 2026-04-30 |
+| M23 | 真实 CTF 靶场联调 + thinking model + verbose trace + 健壮性修复 | 2026-05-06 |
 
 ---
 
@@ -319,4 +321,71 @@ program_compiled_count=2
 planner_sources=['llm', 'llm']
 outcome_count=2
 candidate_flags=0
+```
+
+---
+
+## 2026-05-06 运行验证记录：真实 CTF 靶场解题 + thinking model 联调
+
+### 背景
+
+本次验证目标是确认 AttackAgent 能否对接真实 CTF 靶场并解题。使用本地靶场服务器 `scripts/local_range.py`（4 题）+ Xiaomi mimo-v2.5-pro thinking 模型（Anthropic API 格式）。
+
+### 已解决问题
+
+1. **UnicodeEncodeError: 'gbk' codec（Windows 终端）**
+   - 根因：LLM 返回文本含 © 等非 GBK 字符，Windows PowerShell 终端默认 GBK 编码
+   - 修复：`_safe_print()` 替换所有 `print()`，捕获 UnicodeEncodeError 并替换不可编码字符
+
+2. **KeyError: 'free_exploration'（apg.py）**
+   - 根因：`update_graph()` 遍历 `program.pattern_nodes` 时，自由探索程序节点不在 `pattern_graph.nodes` 中
+   - 修复：遍历前增加 `if node_id not in record.pattern_graph.nodes: continue` 保护
+
+3. **Anthropic SDK 401 Unauthorized**
+   - 根因：系统环境变量 `ANTHROPIC_AUTH_TOKEN` 和 `ATTACK_AGENT_API_KEY` 残留旧值，Anthropic SDK 自动读取并添加冲突的 Bearer header
+   - 修复：`AnthropicReasoningModel.__init__()` 清除 `ANTHROPIC_API_KEY`、`ANTHROPIC_AUTH_TOKEN`、`ANTHROPIC_BASE_URL` 环境变量
+
+4. **Thinking model 仅返回 thinking blocks，无 text 输出**
+   - 根因：mimo-v2.5-pro 的 thinking 消耗全部 output budget，未留 text block 给 JSON response
+   - 修复：当 `enable_thinking=True` 且 `text` 为空但有 `thinking_text` 时，自动 re-request（去掉 thinking 参数），获取实际 JSON 输出
+
+5. **Anthropic SDK 长重试挂起**
+   - 根因：SDK 默认 `max_retries=2`，累积等待时间过长
+   - 修复：OpenAI 和 Anthropic SDK 客户端均设置 `max_retries=0`
+
+6. **code-sandbox RuntimeError 崩溃**
+   - 根因：LLM 生成的代码使用 disallowed calls（如 print），sandbox.execute() 抛出 RuntimeError
+   - 修复：`_execute_code_sandbox()` 包裹 try-except RuntimeError，返回 `_clean_fail("code-sandbox")`
+
+7. **stop_challenge HTTP 404**
+   - 根因：靶场平台不支持 `/stop_challenge` 端点
+   - 修复：`controller.py` 包裹 try-except，pass 忽略可选端点
+
+8. **structured-parse 无 parse_source 时 crash**
+   - 根因：缺少 `parse_source` 参数时直接返回 `_clean_fail`，但最近观测可用
+   - 修复：自动检测 `completed_observations` 中最近观测作为 `parse_source`
+
+### 解题成果
+
+成功解题 **web-render-easy (Hidden Comments)**：
+- 解题路径：browser-inspect → Playwright 渲染页面 → 提取 HTML 注释 → extract-candidate 正则匹配
+- Flag：`flag{hidden_in_comments_042}`
+- Agent 自动提交 flag，Controller 确认 accepted，项目状态 → DONE
+
+### 新增功能
+
+- **Thinking model 支持**：ModelConfig 新增 `enable_thinking: bool = False`，Anthropic 适配器支持 extended thinking（budget_tokens, temperature=1 强制要求）
+- **Verbose LLM trace**：`╔══ LLM CALL: {task} ══` banner + response trace，覆盖 OpenAI 和 Anthropic 两个适配器
+- **Dispatcher trace**：cycle header（CYCLE #N | Project | Stage | Stagnation）、program trace（Path/Goal/Steps）、execution outcome trace（Status/Novelty/Cost/Flags）
+- **本地靶场服务器**：`scripts/local_range.py`，4 题（web-auth-easy/web-render-easy/web-encoding-medium/web-chain-medium），实现完整 CompetitionProvider REST API + 挑战页面
+
+### 验证结果
+
+```
+python -m unittest discover tests/ -v
+# 327 tests in ~36s, OK
+
+python scripts/local_range.py --port 8484
+python -m attack_agent --config config/local-openai-compatible.json --provider-url http://127.0.0.1:8484 --verbose
+# → 成功解题 web-render-easy，flag{hidden_in_comments_042}
 ```

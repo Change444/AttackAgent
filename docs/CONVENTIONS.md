@@ -13,7 +13,7 @@
 
 ## Testing Rules
 
-- 测试覆盖率目标 > 80%（当前 226 个测试全部通过）
+- 测试覆盖率目标 > 80%（当前 327 个测试全部通过）
 - 新模块合并前必须包含对应测试文件
 - 测试命名：`test_{module}_{scenario}`
 - 元数据回退路径必须保留在测试中（backward compatibility）
@@ -23,7 +23,7 @@
 
 - LightweightSecurityShell 在 runtime 执行前验证所有 TaskBundle
 - Critical 级违规阻止执行；Warning 级违规仅记录
-- SecurityConstraints 值从 SecurityConfig 通过 `from_config()` 构建——禁止在业务逻辑中硬编码默认值
+- SecurityConstraints 值从 SecurityConfig 直接获取——SecurityConstraints 类已删除（v4.1），SecurityConfig 直接作为 LightweightSecurityShell 约束源（禁止在业务逻辑中硬编码默认值）
 - `step.parameters` 中 URL scope 必须匹配 `allowed_hostpatterns`——`_check_parameter_scope()` 强制此规则
 - 参数优先级：`step.parameters` > metadata defaults > hardcoded defaults
 
