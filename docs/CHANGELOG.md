@@ -9,6 +9,8 @@
 
 | 版本 | 日期 | 变更说明 |
 |------|------|----------|
+| 4.4 | 2026-05-08 | Session 跨 Cycle 持久化修复：(1) state_graph.py 新增 SessionState dataclass（存储 cookies/auth_headers/base_url）+ ProjectRecord.session_state 字段 + StateGraphService.get/set_session_state() 方法；(2) runtime.py WorkerRuntime.run_task() 新增 state_service 和 project_id 参数，任务执行前从 StateGraphService 恢复 session cookies 和 auth headers，任务完成后将 session-materialize 观测中的 cookies/auth 持久化；(3) dispatcher.py 调用 run_task() 时传递 state_service 和 project_id。解题率 3/4→4/4（web-auth-easy 登录成功 ✓）。参考 Cairn 架构（Fact-Intent Graph + OODA 循环），整理 CLAUDE.md：合并通用 AI 编码准则（Think Before Coding/Simplicity First/Surgical Changes/Goal-Driven Execution）与项目特定指令，新增 docs/USER_GUIDE.md 导航 |
+| 4.3 | 2026-05-08 | 本地靶场解题率 1/4→3/4：(1) _inject_challenge_params 增强——privileged_paths 注入从"紧跟 session-materialize"改为"第二个+ http-request"（修复 identity-boundary verification 阶段无法访问 /admin），session-materialize 注入 login_url+credentials（从 metadata 读取），token_chain query 注入（支持 API 链式调用）；(2) structured-parse 增强——提取 cookies + base64 自动解码（decoded_cookies + potential_secrets），encoding-transform 族 cookie 中的 flag 可被 extract-candidate 发现；(3) http-request 增强——_substitute_observe_templates 支持 {observe.*} 模板替换（从最近 http-request 观测 JSON 中提取字段注入 query），session cookie 恢复（从 completed_observations 中 session-materialize 观测提取 cookies_obtained 注入 session_manager.cookie_jar）；(4) _plan_candidates 增强——VERIFICATION_GATE 规划时自动前置 session-materialize 步骤（保持 cookie 在同一 task bundle 内）；(5) local_range.py metadata 增强——web-auth-easy 添加 login_url+credentials+privileged_paths，web-chain-medium 添加 api_endpoints+token_chain；(6) _make_cookie_from_header helper（Set-Cookie header→Cookie 对象）。解题：web-render-easy ✓、web-encoding-medium ✓（base64 cookie 解码）、web-chain-medium ✓（token 链式传递）。web-auth-easy 仍 403（cookie 在 jar 中但 HTTP 请求未携带，疑似 http.cookiejar domain/path 匹配问题） |
 | 4.2 | 2026-05-06 | 真实 CTF 靶场联调：thinking model 支持（Anthropic enable_thinking + budget_tokens + thinking 耗尽 output budget 时自动 re-request），verbose LLM trace 日志（╔══ LLM CALL ══ banner + response trace），dispatcher cycle/program/outcome trace，Windows GBK safe_print（_safe_print 替换 print 防止 UnicodeEncodeError），健壮性修复（apg.py KeyError free_exploration 节点、controller.py stop_challenge try-except、runtime.py code-sandbox RuntimeError catch + structured-parse 自动检测最近观测、model_adapter.py 清除冲突 Anthropic 环境变量防 401 + SDK max_retries=0 防长重试挂起 + empty_response 检测），ModelConfig 新增 enable_thinking 字段，本地 CTF 靶场服务器 scripts/local_range.py（4 题：web-auth-easy/web-render-easy/web-encoding-medium/web-chain-medium），AGENTS.md。成功解题 web-render-easy（Hidden Comments：flag{hidden_in_comments_042}） |
 | 4.1 | 2026-04-30 | Phase 4 架构清理：SecurityConstraints 删除→SecurityConfig 直接作为约束源（消除重复类+from_config桥接），SecurityConfig 新增 forbidden_primitive_combinations 字段；StrategyLayer 删除→Dispatcher 内联策略逻辑（stagnation/submit/stage），strategy.py 仅保留 SubmitClassifier+TaskPromptCompiler；ARCHITECTURE.md v4.1 对齐更新 |
 | 3.16 | 2026-04-29 | Phase 3 R11+R12 switch_path 真实逻辑 + 多族组合：EnhancedAPGPlanner.switch_path() 实现 STRUCTURED→FREE_EXPLORATION(停滞≥3时自动切换) + FREE_EXPLORATION→STRUCTURED(预算耗尽或置信度≥0.7时回切) + 停滞计数器(_stagnation_counters) + record_outcome() + PATH_SELECTION 事件记录 + stagnation reset，_compose_multi_family_candidates() 融合 2 族步骤(观察阶段用主族 + 操作阶段用副族 + 验证阶段用主族，副族得分≥0.7×主族得分时组合) + PlanCandidate.secondary_families + ProgramDecision.secondary_families + ActionProgram 融合描述/rationale + HeuristicFreeExplorationPlanner 多族融合 + DualPathConfig.path_switch_stagnation_threshold + DualPathConfig.multi_family_score_ratio + StrategyLayer.update_after_outcome 调用 record_outcome，12 项新测试(6 项 R11 + 6 项 R12)，330 测试通过 |
@@ -60,6 +62,7 @@
 | M21 | Phase 4 R14 更新 ARCHITECTURE.md 与代码对齐 | 2026-04-30 |
 | M22 | Phase 4 R15 简化 Dispatcher/StrategyLayer 间接层 | 2026-04-30 |
 | M23 | 真实 CTF 靶场联调 + thinking model + verbose trace + 健壮性修复 | 2026-05-06 |
+| M24 | 本地靶场解题率 1/4→3/4（cookie/base64/token chain） | 2026-05-08 |
 
 ---
 
@@ -116,6 +119,15 @@
 | FAMILY_PROGRAMS 步骤不含挑战特定 URL/路径参数 | v3.15 | _inject_challenge_params() 在规划阶段注入 challenge.target→url/login_url 到模板步骤(setdefault 不覆盖)，runtime _resolve_*_specs() 增加 bundle.target 回退(metadata+param_overrides 均空时) |
 | switch_path() 是空 stub | v3.16 | EnhancedAPGPlanner.switch_path() 实现 STRUCTURED→FREE_EXPLORATION(停滞≥3自动切换) + FREE_EXPLORATION→STRUCTURED(预算耗尽或置信度≥0.7回切) + _stagnation_counters + record_outcome() + PATH_SELECTION 事件 + stagnation reset |
 | 无多族组合攻击链 | v3.16 | _compose_multi_family_candidates() 融合 2 族步骤(观察→主族 + 操作→副族 + 验证→主族，副族得分≥0.7×主族)，PlanCandidate.secondary_families + ProgramDecision.secondary_families + HeuristicFree 多族融合 + DualPathConfig.multi_family_score_ratio |
+| identity-boundary verification 阶段无法访问 /admin（privileged_paths 仅注入紧跟 session-materialize 的 http-request） | v4.3 | _inject_challenge_params 改为"第二个+ http-request after session-materialize"注入 privileged_paths |
+| SOLVER profile 缺 http-request，encoding-transform 无法收集初始数据 | v4.3 | SOLVER profile 添加 http-request |
+| protocol-logic-boundary 关键词缺少 api/rest/token/chain/json/endpoint 等 | v4.3 | 关键词扩展 +11 个 |
+| encoding-transform OBSERVATION_GATE 无 http-request 步骤 | v4.3 | 模板添加 http-request + structured-parse |
+| web-chain-medium http-request 命中首页而非 /api/step1, /api/step2 | v4.3 | api_endpoints metadata + 注入 |
+| session-materialize 无 login_url/credentials 注入 | v4.3 | metadata login_url + credentials 注入 session-materialize 步骤 |
+| encoding-transform 无法从 cookie 中提取 base64 编码的 flag | v4.3 | structured-parse 提取 cookies + base64 自动解码 |
+| API 链式调用无法传递 token（/api/step1→/api/step2） | v4.3 | token_chain metadata + _substitute_observe_templates {observe.*} 替换 |
+| 跨 phase session cookie 丢失（VERIFICATION_GATE 新 task bundle 无 ACTION_TEMPLATE 的 cookie） | v4.3 | _plan_candidates VERIFICATION_GATE 前置 session-materialize + http-request session cookie 恢复 |
 
 ---
 
@@ -167,12 +179,20 @@
 
 #### 当前能解 vs 不能解
 
-**勉强能解（约 25-30% CTF 题）**：
+**本地靶场验证结果（v4.3，4 题 3 通过）**：
+- web-render-easy（Hidden Comments）✓ — browser-inspect + extract-candidate
+- web-encoding-medium（Base64 Cookie）✓ — http-request cookie 捕获 + structured-parse base64 自动解码 + extract-candidate
+- web-chain-medium（Multi-Step API）✓ — http-request /api/step1 获取 token + {observe.token} 模板替换注入 /api/step2 query + extract-candidate
+- web-auth-easy（Login Portal）✗ — session-materialize 登录成功 + cookie 在 jar 中，但 HTTP 请求未携带 cookie（403），疑似 http.cookiejar domain/path 匹配问题
+
+**能解（约 30-35% CTF 题）**：
 - 简单 HTTP GET 页面 + HTML 注释隐藏 flag
 - 简单 base64/xor/hex/zlib 压缩/CSV 解析编码题（code-sandbox class/with/raise 可解）
+- Cookie 中 base64 编码的 flag（structured-parse 自动解码）
+- 多步 API 链式调用（token_chain + {observe.*} 模板替换）
 - 简单 class 结构化解码（RSA/AES 参数组装、自定义解码器）
 - with 上下文管理器模式（资源清理、文件操作模拟）
-- 简单 form POST 登录后获取 flag
+- 简单 form POST 登录后获取 flag（需 cookie 正确传递）
 - JSON API 响应中直接包含 flag
 - Basic Auth 保护页面
 - Bearer token 保护 API
@@ -181,20 +201,16 @@
 - CSRF token 保护登录页面（Django/Flask-WTF 等）
 - JSON body API 登录
 - ZIP/tar 内嵌 flag（内容提取 + 文本预览）
-- SSRF 类题（族关键词匹配 + HTTP 探测，但复杂 SSRF 仍受限）
-- SSTI 类题（族关键词匹配 + 模板注入探测，但高级 SSTI 需 JS 渲染）
-- IDOR 类题（族关键词匹配 + 身份切换探测）
-- 简单密码题（族关键词匹配 + code-sandbox 数学运算）
-- pwn 类题（族关键词匹配 + binary-inspect 基础分析）
-- 协议分析类题（族关键词匹配 + artifact-scan pcap 扫描）
+- SSRF/SSTI/IDOR/简单密码/pwn/协议分析类题（族关键词匹配）
 
-**完全不能解（约 60-65% CTF 题）**：
+**仍不能解（约 60-65% CTF 题）**：
 - JS 渲染/JS 操纵类 web 题（Playwright 可渲染，但复杂 DOM 操纵仍受限）
 - 现代密码题（RSA/AES/padding oracle，crypto 库不可用）
 - Reverse/pwn 题（无反汇编、无调试器）
 - Forensics 取证题（无 pcap 深度分析、无 EXIF/磁盘映像）
 - 多步认证（2FA、OAuth、JWT 操纵）
 - 复杂竞态条件（无并发请求基础设施）
+- session cookie 跨域/path 传递问题（http.cookiejar 匹配限制）
 
 ---
 

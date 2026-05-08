@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 from .apg import EpisodeMemory, build_episode_entry
 from .compilers import HandoffMemory, ProgressCompiler, RetryHandoffCompiler
@@ -9,6 +9,15 @@ from .models import Asset, Credential, Endpoint, Evidence, Finding, Service, Ses
 from .platform_models import Artifact, CandidateFlag, ChallengeInstance, Event, EventType, Hypothesis, Observation, PatternGraph, ProjectSnapshot
 from .world_state import WorldState
 from .observation_summarizer import ObservationSummarizer
+
+
+@dataclass(slots=True)
+class SessionState:
+    """Persistent session state across planning cycles."""
+    cookies: list[dict] = field(default_factory=list)  # [{name, value, domain, path}]
+    auth_headers: dict[str, str] = field(default_factory=dict)  # Authorization headers
+    base_url: str = ""
+    created_at: str = ""
 
 
 @dataclass(slots=True)
@@ -24,6 +33,7 @@ class ProjectRecord:
     artifacts: dict[str, Artifact] = field(default_factory=dict)
     hypotheses: dict[str, Hypothesis] = field(default_factory=dict)
     pattern_graph: PatternGraph | None = None
+    session_state: SessionState | None = None
     stagnation_counter: int = 0
     tombstones: list[str] = field(default_factory=list)
 
@@ -173,6 +183,20 @@ class StateGraphService:
                 source="controller",
             )
         )
+
+    def get_session_state(self, project_id: str) -> SessionState | None:
+        """Get persistent session state for a project."""
+        record = self.projects.get(project_id)
+        if record is None:
+            return None
+        return record.session_state
+
+    def set_session_state(self, project_id: str, session_state: SessionState) -> None:
+        """Set persistent session state for a project."""
+        record = self.projects.get(project_id)
+        if record is None:
+            return
+        record.session_state = session_state
 
     def _apply_observation(self, record: ProjectRecord, payload: dict[str, Any]) -> None:
         target = record.snapshot.challenge.target

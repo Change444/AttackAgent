@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import difflib
 import hashlib
 import http.cookiejar
@@ -49,7 +50,39 @@ def _clean_fail(primitive_name: str) -> ActionOutcome:
     )
 
 
-@dataclass(slots=True)
+def _make_cookie_from_header(cookie_header: str, target_url: str) -> http.cookiejar.Cookie:
+    """Create a Cookie object from a Set-Cookie header string."""
+    from urllib.parse import urlparse
+    parsed = urlparse(target_url)
+    parts = cookie_header.split(";")
+    name_value = parts[0].strip()
+    name, _, value = name_value.partition("=")
+    cookie = http.cookiejar.Cookie(
+        version=0, name=name.strip(), value=value.strip(),
+        port=None, port_specified=False,
+        domain=parsed.hostname or "", domain_specified=True, domain_initial_dot=False,
+        path="/", path_specified=True,
+        secure=False, expires=None, discard=True, comment=None, comment_url=None,
+        rest={}, rfc2109=False,
+    )
+    for part in parts[1:]:
+        part = part.strip()
+        if "=" in part:
+            attr_name, _, attr_val = part.partition("=")
+            attr_name = attr_name.strip().lower()
+            if attr_name == "path":
+                cookie = http.cookiejar.Cookie(
+                    version=0, name=name.strip(), value=value.strip(),
+                    port=None, port_specified=False,
+                    domain=cookie.domain, domain_specified=cookie.domain_specified, domain_initial_dot=cookie.domain_initial_dot,
+                    path=attr_val.strip(), path_specified=True,
+                    secure=cookie.secure, expires=cookie.expires, discard=cookie.discard,
+                    comment=None, comment_url=None, rest={}, rfc2109=False,
+                )
+    return cookie
+
+
+@dataclass
 class HttpSessionManager:
     cookie_jar: http.cookiejar.CookieJar = field(default_factory=http.cookiejar.CookieJar)
     max_redirects: int = 5
@@ -99,14 +132,69 @@ class PrimitiveAdapter:
 
 
 
+def _substitute_observe_templates(spec: dict[str, object], completed_observations: dict[str, Any]) -> dict[str, object]:
+    """Replace {observe.field} placeholders in spec values with data from recent observations."""
+    if not completed_observations:
+        return spec
+    # Find the most recent http-request observation
+    recent_obs = None
+    for obs in reversed(list(completed_observations.values())):
+        if obs.source == "http-request":
+            recent_obs = obs
+            break
+    if recent_obs is None:
+        return spec
+    # Try to parse the observation text as JSON
+    obs_data: dict[str, Any] = {}
+    text = recent_obs.payload.get("text", "")
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            obs_data = parsed
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        pass
+    if not obs_data:
+        return spec
+    # Substitute {observe.*} placeholders in string values
+    def _sub_value(val: object) -> object:
+        if not isinstance(val, str):
+            return val
+        import re as _re
+        def _replace(m: _re.Match) -> str:
+            field = m.group(1)
+            return str(obs_data.get(field, m.group(0)))
+        return _re.sub(r"\{observe\.(\w+)\}", _replace, val)
+    result: dict[str, object] = {}
+    for k, v in spec.items():
+        if isinstance(v, dict):
+            result[k] = {sk: _sub_value(sv) for sk, sv in v.items()}
+        elif isinstance(v, list):
+            result[k] = [_sub_value(item) for item in v]
+        else:
+            result[k] = _sub_value(v)
+    return result
+
+
 def _execute_http_request(step: PrimitiveActionStep, bundle: TaskBundle, session_manager: HttpSessionManager | None = None, http_client: Any | None = None) -> ActionOutcome:
     request_specs = _resolve_http_request_specs(step, bundle)
     if not request_specs:
         return _clean_fail("http-request")
+    # Recover session cookies from previous session-materialize observations
+    if session_manager is not None:
+        for obs in bundle.completed_observations.values():
+            if obs.source == "session-materialize":
+                for cookie_str in obs.payload.get("cookies_obtained", []):
+                    session_manager.cookie_jar.set_cookie(
+                        _make_cookie_from_header(cookie_str, bundle.target)
+                    ) if "=" in cookie_str else None
+                auth_token = obs.payload.get("auth_token", "")
+                if auth_token and "Authorization" not in session_manager.auth_headers:
+                    session_manager.add_auth_header("Authorization", auth_token)
     observations: list[Observation] = []
     artifacts: list[Artifact] = []
     total_cost = float(bundle.instance.metadata.get("primitive_costs", {}).get("http-request", 1.0))
     for index, spec in enumerate(request_specs):
+        spec = _substitute_observe_templates(spec, bundle.completed_observations)
         try:
             response_data = _perform_http_request(spec, bundle.target, session_manager, http_client)
         except error.URLError as exc:
@@ -1210,6 +1298,35 @@ def _perform_structured_parse(payload: dict[str, Any], fmt: str, extract_fields:
     text = payload.get("text", "")
     if not text:
         text = json.dumps(payload, ensure_ascii=True, default=str)
+
+    # Always extract cookies from payload (available regardless of format)
+    cookies_raw = payload.get("cookies", [])
+    cookie_dict: dict[str, str] = {}
+    for cookie_str in cookies_raw:
+        if "=" in cookie_str:
+            # Parse "key=value; Path=/; HttpOnly" style cookies
+            pair = cookie_str.split(";")[0].strip()
+            k, _, v = pair.partition("=")
+            cookie_dict[k.strip()] = v.strip()
+    if cookie_dict:
+        result["cookies"] = cookie_dict
+        # Auto-decode any cookie values that look like base64
+        decoded_cookies: dict[str, str] = {}
+        for k, v in cookie_dict.items():
+            try:
+                decoded = base64.b64decode(v).decode("utf-8", errors="replace")
+                if decoded != v:
+                    decoded_cookies[k] = decoded
+            except Exception:
+                pass
+        if decoded_cookies:
+            result["decoded_cookies"] = decoded_cookies
+            # Check for flags in decoded cookies
+            for k, v in decoded_cookies.items():
+                if re.search(r"flag\{[^}]+\}", v):
+                    result["potential_secrets"] = result.get("potential_secrets", [])
+                    result["potential_secrets"].append(f"cookie:{k}")
+
     if fmt == "json":
         try:
             parsed = json.loads(text)
@@ -1217,7 +1334,7 @@ def _perform_structured_parse(payload: dict[str, Any], fmt: str, extract_fields:
                 result["parsed_data"] = parsed
                 if extract_fields:
                     result["extracted"] = {f: parsed.get(f) for f in extract_fields if f in parsed}
-                result["potential_secrets"] = [
+                result["potential_secrets"] = result.get("potential_secrets", []) + [
                     f for f, v in parsed.items()
                     if isinstance(v, str) and any(kw in v.lower() for kw in ("password", "secret", "key", "token", "flag"))
                 ]
@@ -1611,7 +1728,7 @@ class PrimitiveRegistry:
             WorkerProfile.BROWSER: ["http-request", "browser-inspect", "structured-parse", "diff-compare", "code-sandbox", "extract-candidate"],
             WorkerProfile.ARTIFACT: ["artifact-scan", "structured-parse", "code-sandbox", "extract-candidate"],
             WorkerProfile.BINARY: ["binary-inspect", "structured-parse", "code-sandbox", "extract-candidate"],
-            WorkerProfile.SOLVER: ["structured-parse", "diff-compare", "code-sandbox", "extract-candidate"],
+            WorkerProfile.SOLVER: ["http-request", "structured-parse", "diff-compare", "code-sandbox", "extract-candidate"],
             WorkerProfile.HYBRID: list(self.adapters.keys()),
         }
         return matrix[profile]
@@ -1630,12 +1747,33 @@ class WorkerRuntime:
         self._browser_config = browser_config
         self._http_config = http_config
 
-    def run_task(self, task_bundle: TaskBundle) -> tuple[list[Event], ActionOutcome]:
+    def run_task(self, task_bundle: TaskBundle, state_service: Any | None = None, project_id: str = "") -> tuple[list[Event], ActionOutcome]:
         session_manager = HttpSessionManager()
         from .browser_adapter import build_browser_inspector_from_config
         browser_inspector = build_browser_inspector_from_config(self._browser_config)
         from .http_adapter import build_http_client_from_config
         http_client = build_http_client_from_config(self._http_config)
+
+        # Restore session state from StateGraphService (cross-cycle persistence)
+        if state_service is not None and project_id:
+            session_state = getattr(state_service, 'get_session_state', lambda p: None)(project_id)
+            if session_state is not None:
+                for cookie_info in session_state.cookies:
+                    # Reconstruct cookie with proper domain handling
+                    domain = cookie_info.get('domain', '127.0.0.1')
+                    path = cookie_info.get('path', '/')
+                    cookie = http.cookiejar.Cookie(
+                        version=0, name=cookie_info.get('name', ''), value=cookie_info.get('value', ''),
+                        port=None, port_specified=False,
+                        domain=domain, domain_specified=True, domain_initial_dot=False,
+                        path=path, path_specified=True,
+                        secure=False, expires=None, discard=True, comment=None, comment_url=None,
+                        rest={}, rfc2109=False,
+                    )
+                    session_manager.cookie_jar.set_cookie(cookie)
+                # Restore auth headers
+                for name, value in session_state.auth_headers.items():
+                    session_manager.add_auth_header(name, value)
         aggregate = ActionOutcome(status="failed", failure_reason="no_steps")
         events: list[Event] = []
         try:
@@ -1749,6 +1887,31 @@ class WorkerRuntime:
             )
         )
         events.append(self.checkpoint(task_bundle))
+
+        # Persist session state to StateGraphService (cross-cycle persistence)
+        if state_service is not None and project_id:
+            for obs in aggregate.observations:
+                if obs.source == "session-materialize":
+                    cookies_info = []
+                    for cookie_str in obs.payload.get("cookies_obtained", []):
+                        if "=" in cookie_str:
+                            pair = cookie_str.split(";")[0].strip()
+                            k, _, v = pair.partition("=")
+                            cookies_info.append({"name": k.strip(), "value": v.strip(), "domain": "127.0.0.1", "path": "/"})
+                    # Get any auth tokens from the observation
+                    auth_token = obs.payload.get("auth_token", "")
+                    auth_headers = {}
+                    if auth_token:
+                        auth_headers["Authorization"] = auth_token
+                    from .state_graph import SessionState
+                    session_state = SessionState(
+                        cookies=cookies_info,
+                        auth_headers=auth_headers,
+                        base_url=task_bundle.target,
+                        created_at="",
+                    )
+                    state_service.set_session_state(project_id, session_state)
+
         return events, aggregate
 
     def checkpoint(self, bundle: TaskBundle) -> Event:

@@ -102,7 +102,7 @@ class Dispatcher:
         if not validation.allowed:
             return  # 静默阻止，记录已通过事件系统
 
-        events, outcome = self.runtime.run_task(bundle)
+        events, outcome = self.runtime.run_task(bundle, self.state_graph, project_id)
 
         # ── Trace execution outcome ─────────────────────────────────────
         print(f"  Execution: {outcome.status} | Novelty: {outcome.novelty:.2f} | Cost: {outcome.cost:.2f}", flush=True)

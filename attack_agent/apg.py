@@ -40,7 +40,7 @@ FAMILY_KEYWORDS = {
     "idor-access-boundary": ("idor", "insecure", "direct", "object", "reference", "privilege", "escalation", "bypass", "uuid", "sequential"),
     "crypto-math-boundary": ("rsa", "aes", "ecb", "cbc", "padding", "oracle", "modular", "exponent", "ciphertext", "plaintext", "crypto", "diffie", "elliptic", "discrete", "lattice"),
     "pwn-memory-boundary": ("pwn", "overflow", "buffer", "shellcode", "rop", "gadget", "heap", "stack", "libc", "aslr", "canary", "nx", "seccomp"),
-    "protocol-logic-boundary": ("protocol", "tcp", "udp", "irc", "ftp", "smtp", "dns", "mqtt", "modbus", "packet", "frame", "serialization", "protobuf", "deserialization"),
+    "protocol-logic-boundary": ("protocol", "tcp", "udp", "irc", "ftp", "smtp", "dns", "mqtt", "modbus", "packet", "frame", "serialization", "protobuf", "deserialization", "api", "rest", "token", "chain", "multi-step", "json", "endpoint", "graphql", "rpc"),
     "race-condition-boundary": ("race", "concurrent", "timing", "mutex", "lock", "thread", "parallel", "atomic", "toctou", "collision", "interleaving"),
 }
 
@@ -133,6 +133,7 @@ FAMILY_PROGRAMS = {
     },
     "encoding-transform": {
         PatternNodeKind.OBSERVATION_GATE: [
+            PrimitiveActionStep("http-request", "Collect responses with potential encoding or transform clues", {"required_tags": ["encoding-transform", "observation_gate"], "method": "GET"}),
             PrimitiveActionStep("structured-parse", "Detect transform, encoding, or cipher hints", {"required_tags": ["encoding-transform", "observation_gate"]}),
         ],
         PatternNodeKind.ACTION_TEMPLATE: [
@@ -592,6 +593,13 @@ class APGPlanner:
             steps = self.pattern_library.get_program_steps(family, node.kind)
             if not steps:
                 continue
+            # When planning verification gate, prepend session-materialize if the
+            # action phase uses it — this keeps cookies in the same task bundle.
+            if node.kind == PatternNodeKind.VERIFICATION_GATE:
+                act_steps = self.pattern_library.get_program_steps(family, PatternNodeKind.ACTION_TEMPLATE)
+                session_steps = [s for s in act_steps if s.primitive == "session-materialize"]
+                if session_steps:
+                    steps = list(session_steps) + steps
             steps = _inject_challenge_params(steps, record.snapshot.challenge, record.snapshot.instance)
             candidates.append(
                 PlanCandidate(
@@ -665,15 +673,56 @@ def _inject_challenge_params(
 ) -> list[PrimitiveActionStep]:
     """Inject challenge-specific parameters into FAMILY_PROGRAMS template steps."""
     target = instance.target if instance else challenge.target
+    metadata = instance.metadata if instance else challenge.metadata
+
+    # Discover privileged paths from metadata or derive from login_url
+    privileged_paths: list[str] = list(metadata.get("privileged_paths", []))
+    if not privileged_paths:
+        login_url = metadata.get("login_url", "")
+        if login_url:
+            from urllib.parse import urlparse
+            parsed = urlparse(login_url)
+            base_path = parsed.path.rstrip("/")
+            if base_path.endswith("/login"):
+                parent = base_path[: -len("/login")]
+                privileged_paths.append(f"{parent}/admin" if parent else "/admin")
+
+    # API endpoint paths for sequential http-request injection
+    api_endpoints: list[str] = list(metadata.get("api_endpoints", []))
+    token_chain = metadata.get("token_chain", {})
+    _api_endpoint_idx = 0
+    _http_request_count = 0
+    _seen_session_materialize = False
+
     injected = []
     for step in steps:
         params = dict(step.parameters)
         if step.primitive == "http-request":
+            _http_request_count += 1
             params.setdefault("url", target)
+            # Second+ http-request after session-materialize → inject privileged path
+            if _seen_session_materialize and _http_request_count > 1 and privileged_paths and "path" not in params:
+                params["path"] = privileged_paths[0]
+            # Inject sequential API endpoint paths
+            elif api_endpoints and _api_endpoint_idx < len(api_endpoints) and "path" not in params:
+                params["path"] = api_endpoints[_api_endpoint_idx]
+                _api_endpoint_idx += 1
+            # Inject token chain query template for second+ http-request
+            if token_chain and _http_request_count > 1 and "query" not in params:
+                extract_field = token_chain.get("extract_field", "token")
+                inject_as = token_chain.get("inject_as", "query.token")
+                if inject_as.startswith("query."):
+                    query_field = inject_as[len("query."):]
+                    params["query"] = {query_field: f"{{observe.{extract_field}}}"}
         elif step.primitive == "browser-inspect":
             params.setdefault("url", target)
         elif step.primitive == "session-materialize":
-            params.setdefault("login_url", target)
+            _seen_session_materialize = True
+            params.setdefault("login_url", metadata.get("login_url", target))
+            credentials = metadata.get("credentials", {})
+            if isinstance(credentials, dict):
+                params.setdefault("username", credentials.get("username", ""))
+                params.setdefault("password", credentials.get("password", ""))
         elif step.primitive in ("artifact-scan", "binary-inspect"):
             if target.startswith(("http://", "https://", "ftp://")):
                 params.setdefault("url", target)
