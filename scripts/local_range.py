@@ -58,6 +58,9 @@ def _build_challenge_defs(port: int) -> list[dict[str, Any]]:
                 "hint": "尝试常见的默认凭据组合，例如 admin/admin123",
                 "hint_budget": 2,
                 "signals": ["login", "auth", "admin", "credential", "session", "password"],
+                "login_url": f"{base}/challenge/web-auth-easy/login",
+                "credentials": {"username": "admin", "password": "admin123"},
+                "privileged_paths": ["admin"],
             },
         },
         {
@@ -115,6 +118,8 @@ def _build_challenge_defs(port: int) -> list[dict[str, Any]]:
                 "hint_budget": 2,
                 "signals": ["api", "token", "chain", "multi-step", "json", "rest"],
                 "login_url": f"{base}/challenge/web-chain-medium/api/step1",
+                "api_endpoints": ["api/step1", "api/step2"],
+                "token_chain": {"extract_field": "token", "inject_as": "query.token"},
             },
         },
     ]
