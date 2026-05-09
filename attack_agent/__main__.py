@@ -87,6 +87,12 @@ def _setup_logging(agent_config: AttackAgentConfig) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
+    # team subcommand dispatch — delegates to click CLI
+    raw_argv = argv if argv is not None else sys.argv[1:]
+    if raw_argv and raw_argv[0] == "team":
+        from attack_agent.team.cli import team_main
+        team_main(raw_argv[1:])
+        return
     parser = argparse.ArgumentParser(
         prog="attack_agent",
         description="AttackAgent — authorized-lab / CTF pentest agent",

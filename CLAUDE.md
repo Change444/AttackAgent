@@ -4,7 +4,21 @@ Behavioral guidelines for working with this codebase. Merge with project-specifi
 
 ---
 
-## 1. Think Before Coding
+## 1. Discuss Before Implementing
+
+**先讨论方案，再动手写代码。**
+
+收到任何非 trivial 任务后，不要直接开工。必须先跟用户讨论：
+
+- 这个方案本身是不是最优的？
+- 有没有更合适的技术栈或更简单的实现路径？
+- 提出至少一个替代方案及其 tradeoff
+
+只有用户确认方案后才能开始编码。简单任务（typo、单行 bug fix）可以直接做。
+
+---
+
+## 2. Think Before Coding
 
 **Don't assume. Don't hide confusion. Surface tradeoffs.**
 
@@ -14,7 +28,7 @@ Before implementing:
 - If a simpler approach exists, say so. Push back when warranted.
 - If something is unclear, stop. Name what's confusing. Ask.
 
-## 2. Simplicity First
+## 3. Simplicity First
 
 **Minimum code that solves the problem. Nothing speculative.**
 
@@ -26,7 +40,7 @@ Before implementing:
 
 Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
 
-## 3. Surgical Changes
+## 4. Surgical Changes
 
 **Touch only what you must. Clean up only your own mess.**
 
@@ -42,7 +56,7 @@ When your changes create orphans:
 
 The test: Every changed line should trace directly to the user's request.
 
-## 4. Goal-Driven Execution
+## 5. Goal-Driven Execution
 
 **Define success criteria. Loop until verified.**
 
@@ -62,7 +76,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ---
 
-## 5. Project Overview
+## 6. Project Overview
 
 **AttackAgent** 是面向授权靶场和 CTF 竞赛的渗透测试 Agent。设计理念：**约束推理而非候选选择**——框架引导模型决策，不限制创造力。双路径架构（结构化 + 自由探索），外部安全壳确保操作在授权范围内。
 
@@ -133,6 +147,33 @@ platform.solve_all()
 | AttackAgentConfig | `config.py` | JSON + dataclass 配置 |
 | OpenAI/Anthropic ReasoningModel | `model_adapter.py` | LLM 适配器（thinking model + verbose trace + GBK safe_print） |
 | Local CTF Range | `scripts/local_range.py` | 本地靶场服务器（4 题） |
+| Team Runtime Protocol | `team/protocol.py` | Phase A vNext 协议（7 enum + 9 dataclass + 4 legacy 映射 + to_dict/from_dict） |
+| BlackboardService | `team/blackboard.py` | Phase B+F SQLite append-only event journal + materialized state rebuild（latest-wins per idea_id + solver_id）+ causal_ref 因果链 |
+| BlackboardConfig | `team/blackboard_config.py` | Blackboard 配置（db_path） |
+| TeamManager | `team/manager.py` | Phase C 同步 Manager 决策（admit/stage/timeout/convergence/submit → StrategyAction） |
+| ManagerConfig | `team/manager.py` | Manager 配置（stagnation_threshold/confidence_threshold/max_cycles） |
+| SyncScheduler | `team/scheduler.py` | Phase C 同步调度（schedule_cycle/run_project/run_all） |
+| SchedulerConfig | `team/scheduler.py` | Scheduler 配置（max_cycles/max_project_solvers） |
+| MemoryService | `team/memory.py` | Phase D 结构化记忆（store/query_by_kind/query_by_confidence/dedupe/get_failure_boundaries/get_deduped_entries） |
+| IdeaService | `team/ideas.py` | Phase D 攻击路线管理（propose/claim/mark_verified/mark_failed/list_available/get_best_unclaimed） |
+| ContextCompiler | `team/context.py` | Phase D 上下文编译（compile_manager_context→ManagerContext / compile_solver_context→SolverContextPack） |
+| PolicyHarness | `team/policy.py` | Phase E 统一安全决策（validate_action→PolicyDecision: allow/deny/needs_review/budget_exceeded/rate_limit） |
+| PolicyConfig / RiskThresholds | `team/policy.py` | Phase E 策略配置（risk_thresholds/budget_limit/rate_limit_window/rate_limit_max） |
+| HumanReviewGate | `team/review.py` | Phase E 人工审批（create_review/resolve_review/list_pending_reviews/auto_expire_reviews） |
+| SolverSessionManager | `team/solver.py` | Phase F SolverSession 生命周期（create/claim/start/heartbeat/complete/expire/cancel + 状态机 + 并发控制） |
+| SolverSessionConfig | `team/solver.py` | Phase F 配置（max_project_solvers/session_timeout_seconds/budget_per_session） |
+| MergeHub | `team/merge.py` | Phase G 多 Solver 结果归并（merge_facts/merge_ideas/merge_failure_boundaries/arbitrate_flags + 去重/冲突检测/共识 boost） |
+| MergeResult / MergeDecision / ArbitrationResult | `team/merge.py` | Phase G 归并决策数据结构 |
+| SubmissionVerifier | `team/submission.py` | Phase G 提交验证内部 pass（verify_flag_format/verify_evidence_chain/verify_submission_budget/verify_completeness/run_all_passes） |
+| VerificationResult / CheckResult / SubmissionConfig | `team/submission.py` | Phase G 验证结果与配置数据结构 |
+| Observer | `team/observer.py` | Phase G 只读异常检测（detect_repeated_action/detect_low_novelty/detect_ignored_failure_boundary/detect_stagnation/detect_tool_misuse/generate_report） |
+| ObservationReport / ObservationNote | `team/observer.py` | Phase G 观察报告数据结构 |
+| TeamRuntime | `team/runtime.py` | Phase H 串联入口（run_project/run_all/get_status/list_projects/submit_flag/get_pending_reviews/resolve_review/observe/replay/close） |
+| TeamRuntimeConfig | `team/runtime.py` | Phase H 配置（blackboard_db_path/max_project_solvers/session_timeout_seconds/budget_per_session/max_submissions/flag_pattern/max_cycles/stagnation_threshold/confidence_threshold） |
+| ProjectStatusReport | `team/runtime.py` | Phase H 项目状态摘要（solver_count/idea_count/fact_count/pending_review_count/candidate_flags/last_observation_severity） |
+| SubmissionResult | `team/runtime.py` | Phase H 提交结果（status/verification_result/policy_decision/review_created/flag_value） |
+| Team CLI | `team/cli.py` | Phase H click + rich CLI（run/status/replay/reviews/review approve/reject/modify/observe/serve） |
+| Team API | `team/api.py` | Phase H FastAPI 只读 + review 治理 API（8 GET + 3 POST endpoints） |
 
 ### Key Rules
 
@@ -154,7 +195,7 @@ platform.solve_all()
 
 ### Known Limitations (摘要)
 
-当前系统**本地靶场解题率 4/4**（v4.4，全部通过）。关键进展：
+当前系统**本地靶场解题率 4/4**（v4.4，全部通过）。Team Runtime Phase A+B+C+D+E+F+G+H 已完成（v4.13，协议定义 + legacy 映射 + Blackboard event journal + materialized state rebuild + 同步 ManagerScheduler + ContextCompiler + MemoryService + IdeaService + PolicyHarness + HumanReviewGate + SolverSessionManager + MergeHub + SubmissionVerifier + Observer + TeamRuntime 串联入口 + CLI + API）。关键进展：
 - encoding-transform：structured-parse 自动提取 cookie + base64 解码，cookie 中的 flag 可被发现
 - protocol-logic-boundary：token_chain + {observe.*} 模板替换支持多步 API 链式调用
 - identity-boundary：SessionState 跨 Cycle 持久化，session-materialize 登录后 cookie 自动携带到后续请求
@@ -168,10 +209,14 @@ platform.solve_all()
 
 **完整问题清单 + 四阶段解决计划**：见 [docs/CHANGELOG.md](docs/CHANGELOG.md) "Current Limitations & Roadmap" 章节
 
+**Team Runtime 演进路线图**：见 [docs/TEAM_EVOLUTION_ROADMAP.md](docs/TEAM_EVOLUTION_ROADMAP.md)（Phase A+B+C+D+E+F+G+H 已完成 ✅，Phase I~J 规划中）
+
 ### Navigation
 
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 架构决策 + 概念设计
 - [docs/CONVENTIONS.md](docs/CONVENTIONS.md) — 编码规则 + 项目约束
 - [docs/CHANGELOG.md](docs/CHANGELOG.md) — 版本历史 + 已完成里程碑
 - [docs/USER_GUIDE.md](docs/USER_GUIDE.md) — 用户操作手册
+- [docs/TEAM_EVOLUTION_ROADMAP.md](docs/TEAM_EVOLUTION_ROADMAP.md) — Team Runtime 演进路线图
+- [docs/TEAM_PLATFORM_GUIDE.md](docs/TEAM_PLATFORM_GUIDE.md) — Team 平台使用指南
 - [README.md](README.md) — 项目介绍

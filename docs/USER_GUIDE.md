@@ -43,6 +43,9 @@ AttackAgent 是面向授权靶场和 CTF 竞赛的渗透测试 Agent。核心设
 | Playwright 浏览器 | `pip install attack-agent[browser]` | playwright >= 1.40，JS 渲染 |
 | 语义检索 | `pip install attack-agent[embeddings]` | sentence-transformers >= 2.2 |
 | 全功能 | `pip install attack-agent[all]` | 以上所有 |
+| Team Runtime CLI + API | `pip install attack-agent[team]` | fastapi + uvicorn + httpx + click + rich |
+| 仅 Team CLI | `pip install attack-agent[cli]` | click + rich |
+| 仅 Team API | `pip install attack-agent[api]` | fastapi + uvicorn + httpx |
 
 Playwright 安装后需额外下载浏览器：
 
@@ -750,4 +753,30 @@ python -m unittest tests/test_platform_flow.py
 
 # 指定测试方法
 python -m unittest tests/test_real_primitives.TestRealPrimitives.test_http_post
+```
+
+---
+
+## 10. Team Runtime
+
+AttackAgent 提供 Team Runtime 多 Solver 协作平台，支持 CLI、Python API、HTTP API 三种操作面。详细使用说明见 [docs/TEAM_PLATFORM_GUIDE.md](TEAM_PLATFORM_GUIDE.md)。
+
+快速上手：
+
+```bash
+# 安装
+pip install -e ".[team]"
+
+# CLI 查看项目状态
+python -m attack_agent team status
+
+# 启动 HTTP API
+python -m attack_agent team serve --port 8000
+
+# Python API
+from attack_agent.team.runtime import TeamRuntime
+runtime = TeamRuntime()
+project = runtime.run_project("web-auth-easy")
+report = runtime.get_status(project.project_id)
+runtime.close()
 ```
