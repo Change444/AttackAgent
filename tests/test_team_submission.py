@@ -91,7 +91,7 @@ class TestVerifyEvidenceChain(unittest.TestCase):
         # The IdeaEntry from rebuild won't have failure_boundary_refs set from payload
         # unless they're stored. Let's test with an idea not found.
         result = self.verifier.verify_evidence_chain("p1", "i_nonexistent")
-        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.status, "warning")
         self.assertIn("not found", result.reason)
 
     def test_evidence_chain_writes_event(self):

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from .console import WebConsoleView
-from .platform import CompetitionPlatform
+from .factory import build_team_runtime
 from .platform_models import ChallengeDefinition
 from .provider import InMemoryCompetitionProvider
+from .team.runtime import TeamRuntime
 
 
-def build_demo_platform() -> CompetitionPlatform:
+def build_demo_runtime() -> TeamRuntime:
     provider = InMemoryCompetitionProvider(
         [
             ChallengeDefinition(
@@ -75,13 +76,13 @@ def build_demo_platform() -> CompetitionPlatform:
             )
         ]
     )
-    return CompetitionPlatform(provider)
+    return build_team_runtime(provider)
 
 
 def main() -> None:
-    platform = build_demo_platform()
-    platform.solve_all()
-    console = WebConsoleView(platform.state_graph)
+    runtime = build_demo_runtime()
+    runtime.solve_all()
+    console = WebConsoleView(runtime._state_graph)
     print(console.render_text())
 
 

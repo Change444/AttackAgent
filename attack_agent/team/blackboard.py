@@ -19,14 +19,13 @@ from attack_agent.platform_models import EventType
 from attack_agent.team.blackboard_config import BlackboardConfig
 from attack_agent.team.protocol import (
     IdeaEntry,
-    IdeaStatus,
     MemoryEntry,
     MemoryKind,
     SolverSession,
-    SolverStatus,
     TeamProject,
     to_dict,
 )
+from attack_agent.team.apply_event import apply_event_to_state
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +101,13 @@ class BlackboardService:
             ON events (project_id, timestamp)
             """
         )
+        self._db.commit()
+
+    def clear_project_events(self, project_id: str) -> None:
+        """Remove all events for a project — used before fresh run."""
+        if self._db is None:
+            return
+        self._db.execute("DELETE FROM events WHERE project_id = ?", (project_id,))
         self._db.commit()
 
     # -- write --
@@ -186,6 +192,10 @@ class BlackboardService:
 
     # -- internals --
 
+    def _new_materialized_state(self) -> MaterializedState:
+        """Create a fresh MaterializedState. Used by ReplayEngine to avoid circular import."""
+        return MaterializedState()
+
     def _row_to_event(self, row: sqlite3.Row) -> BlackboardEvent:
         return BlackboardEvent(
             event_id=row["event_id"],
@@ -211,162 +221,21 @@ class BlackboardService:
     def _apply_event(self, state: MaterializedState, ev: BlackboardEvent,
                       idea_index: dict[str, IdeaEntry] | None = None,
                       session_index: dict[str, SolverSession] | None = None) -> None:
-        p = ev.payload
-        et = ev.event_type
-
-        if et == EventType.PROJECT_UPSERTED.value:
-            state.project = TeamProject(
-                project_id=ev.project_id,
-                challenge_id=p.get("challenge_id", ""),
-                status=p.get("status", "new"),
-                created_at=ev.timestamp,
-                updated_at=ev.timestamp,
-            )
-        elif et == EventType.OBSERVATION.value:
-            kind = MemoryKind(p.get("kind", MemoryKind.FACT.value))
-            entry_id = p.get("entry_id", ev.event_id)
-            state.facts.append(
-                MemoryEntry(
-                    entry_id=entry_id,
-                    project_id=ev.project_id,
-                    kind=kind,
-                    content=p.get("summary", p.get("text", "")),
-                    confidence=p.get("confidence", 0.0),
-                    created_at=ev.timestamp,
-                )
-            )
-        elif et == EventType.CANDIDATE_FLAG.value:
-            flag_text = p.get("flag", "")
-            idea_id = p.get("idea_id", ev.event_id)
-            idea_status = IdeaStatus(p.get("status", IdeaStatus.PENDING.value))
-            solver_id = p.get("solver_id", "")
-            idea = IdeaEntry(
-                idea_id=idea_id,
-                project_id=ev.project_id,
-                description=flag_text,
-                status=idea_status,
-                priority=p.get("priority", 100),
-                solver_id=solver_id,
-            )
-            if idea_index is not None:
-                # latest event wins — same idea_id overwrites earlier state
-                idea_index[idea_id] = idea
-            else:
-                state.ideas.append(idea)
-            state.facts.append(
-                MemoryEntry(
-                    entry_id=ev.event_id + "_flag",
-                    project_id=ev.project_id,
-                    kind=MemoryKind.FACT,
-                    content=f"candidate flag: {flag_text}",
-                    confidence=p.get("confidence", 0.5),
-                    created_at=ev.timestamp,
-                )
-            )
-        elif et == EventType.WORKER_ASSIGNED.value:
-            solver_id = p.get("solver_id", ev.event_id)
-            # status from payload: Phase F sessions may start as "created"
-            status_val = p.get("status", SolverStatus.ASSIGNED.value)
-            session = SolverSession(
-                solver_id=solver_id,
-                project_id=ev.project_id,
-                profile=p.get("profile", "network"),
-                status=SolverStatus(status_val),
-                budget_remaining=p.get("budget_remaining", 0.0),
-            )
-            if session_index is not None:
-                # If solver_id already exists, merge: preserve budget/idea_id unless overridden
-                existing = session_index.get(solver_id)
-                if existing is not None:
-                    session = SolverSession(
-                        solver_id=solver_id,
-                        project_id=ev.project_id,
-                        profile=p.get("profile", existing.profile),
-                        status=SolverStatus(status_val),
-                        active_idea_id=existing.active_idea_id,
-                        local_memory_ids=existing.local_memory_ids,
-                        budget_remaining=p.get("budget_remaining", existing.budget_remaining),
-                    )
-                session_index[solver_id] = session
-            else:
-                state.sessions.append(session)
-        elif et == EventType.WORKER_HEARTBEAT.value:
-            # Session status update via heartbeat event (e.g. assigned→running)
-            solver_id = p.get("solver_id", "")
-            status_val = p.get("status", "")
-            if session_index is not None and solver_id and status_val:
-                existing = session_index.get(solver_id)
-                if existing is not None:
-                    session_index[solver_id] = SolverSession(
-                        solver_id=solver_id,
-                        project_id=existing.project_id,
-                        profile=existing.profile,
-                        status=SolverStatus(status_val),
-                        active_idea_id=existing.active_idea_id,
-                        local_memory_ids=existing.local_memory_ids,
-                        budget_remaining=existing.budget_remaining,
-                    )
-        elif et == EventType.WORKER_TIMEOUT.value:
-            # Session expiry
-            solver_id = p.get("solver_id", "")
-            status_val = p.get("status", SolverStatus.EXPIRED.value)
-            if session_index is not None and solver_id:
-                existing = session_index.get(solver_id)
-                if existing is not None:
-                    session_index[solver_id] = SolverSession(
-                        solver_id=solver_id,
-                        project_id=existing.project_id,
-                        profile=existing.profile,
-                        status=SolverStatus(status_val),
-                        active_idea_id=existing.active_idea_id,
-                        local_memory_ids=existing.local_memory_ids,
-                        budget_remaining=existing.budget_remaining,
-                    )
-        elif et == EventType.ACTION_OUTCOME.value:
-            # Session completion/failure/cancellation (if payload has solver_id + status)
-            solver_id = p.get("solver_id", "")
-            outcome_status = p.get("status", "")
-            if session_index is not None and solver_id and outcome_status:
-                existing = session_index.get(solver_id)
-                if existing is not None:
-                    session_index[solver_id] = SolverSession(
-                        solver_id=solver_id,
-                        project_id=existing.project_id,
-                        profile=existing.profile,
-                        status=SolverStatus(outcome_status),
-                        active_idea_id=existing.active_idea_id,
-                        local_memory_ids=existing.local_memory_ids,
-                        budget_remaining=existing.budget_remaining,
-                    )
-            # Failure boundary fact — original behavior preserved:
-            # any ACTION_OUTCOME with status != "ok" produces a failure boundary
-            raw_status = p.get("status", "")
-            if raw_status != "ok":
-                entry_id = p.get("entry_id", ev.event_id)
-                state.facts.append(
-                    MemoryEntry(
-                        entry_id=entry_id,
-                        project_id=ev.project_id,
-                        kind=MemoryKind.FAILURE_BOUNDARY,
-                        content=p.get("error", p.get("summary", "action failed")),
-                        confidence=0.0,
-                        created_at=ev.timestamp,
-                    )
-                )
-        elif et == EventType.SUBMISSION.value:
-            if state.project is not None:
-                state.project.status = p.get("result", "submitted")
-                state.project.updated_at = ev.timestamp
-        elif et == EventType.SECURITY_VALIDATION.value:
-            outcome = p.get("outcome", "unknown")
-            if outcome in ("deny", "block", "critical"):
-                state.facts.append(
-                    MemoryEntry(
-                        entry_id=ev.event_id,
-                        project_id=ev.project_id,
-                        kind=MemoryKind.FAILURE_BOUNDARY,
-                        content=f"security validation: {outcome} — {p.get('reason', '')}",
-                        confidence=0.0,
-                        created_at=ev.timestamp,
-                    )
-                )
+        idx = idea_index if idea_index is not None else {}
+        sidx = session_index if session_index is not None else {}
+        state.project = apply_event_to_state(
+            project_id=ev.project_id,
+            event_type=ev.event_type,
+            payload=ev.payload,
+            timestamp=ev.timestamp,
+            event_id=ev.event_id,
+            state_project=state.project,
+            state_facts=state.facts,
+            idea_index=idx,
+            session_index=sidx,
+        )
+        # If caller didn't provide indexes, merge temp indexes into state lists
+        if idea_index is None:
+            state.ideas.extend(idx.values())
+        if session_index is None:
+            state.sessions.extend(sidx.values())

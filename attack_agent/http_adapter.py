@@ -208,10 +208,15 @@ class RequestsHttpClient:
                 if name not in sess.headers:
                     sess.headers[name] = value
 
-        # Headers from spec
+        # Headers from spec — skip values that can't be encoded as latin-1
+        # (HTTP headers must be latin-1 per RFC 7230; LLM may generate non-ASCII)
         extra_headers = dict(spec.get("headers", {}) or {})
         for k, v in extra_headers.items():
-            sess.headers[str(k)] = str(v)
+            try:
+                str(v).encode("latin-1")
+                sess.headers[str(k)] = str(v)
+            except UnicodeEncodeError:
+                pass
 
         # Body handling
         json_payload = spec.get("json")

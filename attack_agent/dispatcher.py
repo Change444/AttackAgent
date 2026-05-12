@@ -27,7 +27,19 @@ class Dispatcher:
         self.submit_classifier = SubmitClassifier(confidence_threshold)
         self._cycle_counters: dict[str, int] = {}
 
-    def schedule(self, project_id: str) -> None:
+    def schedule(self, project_id: str, skip_stage_decisions: bool = False) -> tuple | None:
+        """Execute one solver cycle.
+
+        When skip_stage_decisions=False (default): original behavior —
+        Dispatcher handles BOOTSTRAP/REASON stage transitions, makes
+        abandon/stagnation decisions, returns None.
+
+        When skip_stage_decisions=True: Dispatcher acts as pure executor —
+        only runs plan→compile_bundle→validate→run_task→record_outcome.
+        BOOTSTRAP/REASON stages are skipped (TeamManager handles those).
+        Returns (outcome, events) tuple so TeamRuntime can write to Blackboard.
+        Stagnation counter and stage transitions are not updated.
+        """
         record = self.state_graph.projects[project_id]
 
         # ── Cycle trace header ──────────────────────────────────────────
@@ -41,11 +53,15 @@ class Dispatcher:
         # ────────────────────────────────────────────────────────────────
 
         if record.snapshot.stage == ProjectStage.BOOTSTRAP:
+            if skip_stage_decisions:
+                return None  # TeamManager handles bootstrap
             profile, _reason = self.planner.reasoner.choose_profile(record.snapshot)
             record.snapshot.worker_profile = profile
             record.snapshot.stage = ProjectStage.REASON
             return
         if record.snapshot.stage == ProjectStage.REASON:
+            if skip_stage_decisions:
+                return None  # TeamManager handles reason
             record.pattern_graph = self.planner.create_graph(record.snapshot)
             record.snapshot.stage = ProjectStage.EXPLORE
             return
@@ -120,6 +136,11 @@ class Dispatcher:
             self.state_graph.append_event(event)
         self._record_outcome(record, program, outcome)
         self._update_after_outcome(record, program, outcome)
+
+        if skip_stage_decisions:
+            # Return results to TeamRuntime — no stage/abandon decisions
+            return (outcome, events)
+
         record.snapshot.stage = self._stage_after_program(record)
 
         # Check abandon after outcome
@@ -136,6 +157,7 @@ class Dispatcher:
                     source="dispatcher",
                 )
             )
+        return None
 
     def assign_worker(self, project_id: str):
         record = self.state_graph.projects[project_id]

@@ -256,7 +256,11 @@ class ConstraintAwareReasoner:
         rationale = response.get("rationale", "")
         steps_data = response.get("steps", [])
         if not isinstance(steps_data, list) or len(steps_data) == 0:
-            return None
+            # Fallback: LLM sometimes returns single step instead of steps array
+            if "primitive" in response and "instruction" in response:
+                steps_data = [response]
+            else:
+                return None
 
         steps: list[PrimitiveActionStep] = []
         for step_data in steps_data:

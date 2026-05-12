@@ -22,6 +22,9 @@ except ImportError:
 
 from attack_agent.team.protocol import HumanDecisionChoice, ReviewRequest, to_dict
 from attack_agent.team.runtime import TeamRuntime, TeamRuntimeConfig
+from attack_agent.team.benchmark import BenchmarkRunner, RegressionReport
+from attack_agent.team.replay import ReplayEngine
+from attack_agent.team.tool_broker import ToolRequest
 
 
 console = Console()
@@ -253,9 +256,138 @@ def observe(project_id: str):
     runtime.close()
 
 
-@team.command()
-@click.option("--port", "-p", default=8000, type=int, help="Port for the API server")
-def serve(port: int):
+@team.command("replay-steps")
+@click.argument("project_id")
+def replay_steps(project_id: str):
+    """Replay project with intermediate state snapshots."""
+    runtime = TeamRuntime()
+    steps = runtime.replay_steps(project_id)
+    if not steps:
+        console.print(f"[yellow]No events found for project {project_id}.[/]")
+        runtime.close()
+        return
+
+    table = Table(title=f"Replay Steps: {project_id}", show_header=True, header_style="bold cyan")
+    table.add_column("Step", justify="right", style="cyan")
+    table.add_column("Event Type", style="green")
+    table.add_column("Timestamp", style="yellow")
+    table.add_column("Facts", justify="right")
+    table.add_column("Ideas", justify="right")
+    table.add_column("Sessions", justify="right")
+    table.add_column("Project Status", style="magenta")
+
+    for s in steps:
+        proj_status = s.state_snapshot.project.status if s.state_snapshot.project else "—"
+        table.add_row(
+            str(s.step_index), s.event.event_type, s.timestamp,
+            str(len(s.state_snapshot.facts)),
+            str(len(s.state_snapshot.ideas)),
+            str(len(s.state_snapshot.sessions)),
+            proj_status,
+        )
+    console.print(table)
+    runtime.close()
+
+
+@team.command("evaluate")
+@click.argument("project_id")
+def evaluate(project_id: str):
+    """Compute and display RunMetrics for a project."""
+    runtime = TeamRuntime()
+    metrics = runtime.evaluate(project_id)
+    severity_lines = "\n".join(
+        f"  {k}: {v}" for k, v in metrics.observation_severity_counts.items()
+    ) or "  None"
+
+    panel = Panel(
+        f"[bold]Solve Success:[/] {metrics.solve_success}\n"
+        f"[bold]Total Cycles:[/] {metrics.total_cycles}\n"
+        f"[bold]Failed Attempts:[/] {metrics.failed_attempts}\n"
+        f"[bold]Review Count:[/] {metrics.review_count}\n"
+        f"[bold]Policy Blocks:[/] {metrics.policy_blocks}\n"
+        f"[bold]Submission Attempts:[/] {metrics.submission_attempts}\n"
+        f"[bold]Repeated Failure Rate:[/] {metrics.repeated_failure_rate:.2f}\n"
+        f"[bold]Stagnation Events:[/] {metrics.stagnation_events}\n"
+        f"[bold]Observation Severity:[/]\n{severity_lines}\n"
+        f"[bold]Budget Consumed:[/] {metrics.budget_consumed:.2f}\n"
+        f"[bold]Idea Claim Rate:[/] {metrics.idea_claim_rate:.2f}",
+        title=f"RunMetrics: {project_id}",
+        border_style="green",
+    )
+    console.print(panel)
+    runtime.close()
+
+
+@team.command("regression")
+@click.option("--baseline", required=True, help="Path to baseline Blackboard DB")
+@click.option("--current", default="data/blackboard.db", help="Path to current Blackboard DB")
+@click.option("--challenges", "-c", multiple=True, help="Challenge IDs to compare")
+def regression(baseline: str, current: str, challenges: tuple[str, ...]):
+    """Run regression comparison between baseline and current Blackboard DBs."""
+    from attack_agent.team.blackboard_config import BlackboardConfig
+
+    baseline_bb = BlackboardService(BlackboardConfig(db_path=baseline))
+    current_bb = BlackboardService(BlackboardConfig(db_path=current))
+
+    runner = BenchmarkRunner()
+    if not challenges:
+        # discover all project IDs from both DBs
+        challenges_set = set()
+        for bb in (baseline_bb, current_bb):
+            cursor = bb._db.cursor()
+            cursor.execute("SELECT DISTINCT project_id FROM events")
+            for row in cursor.fetchall():
+                challenges_set.add(row[0])
+        challenge_list = sorted(challenges_set)
+    else:
+        challenge_list = list(challenges)
+
+    report = runner.run_regression(challenge_list, current_bb, baseline_bb)
+
+    status_style = {
+        "pass": "bold green",
+        "fail": "bold red",
+        "mixed": "bold yellow",
+    }.get(report.overall_status, "white")
+
+    reg_lines = "\n".join(f"  - {r}" for r in report.regressions) or "  None"
+    imp_lines = "\n".join(f"  - {i}" for i in report.improvements) or "  None"
+
+    panel = Panel(
+        f"[bold]Overall Status:[/] [{status_style}]{report.overall_status}[/]\n\n"
+        f"[bold]Regressions:[/]\n{reg_lines}\n\n"
+        f"[bold]Improvements:[/]\n{imp_lines}",
+        title="Regression Report",
+        border_style="cyan",
+    )
+    console.print(panel)
+
+    baseline_bb.close()
+    current_bb.close()
+
+
+@team.command("tools")
+@click.option("--profile", "-p", default="", help="Worker profile to filter primitives (network/browser/artifact/binary/solver/hybrid)")
+def tools_cmd(profile: str):
+    """List available primitives, optionally filtered by worker profile."""
+    runtime = TeamRuntime()
+    primitives = runtime.list_available_primitives(profile)
+
+    table = Table(title="Available Primitives", show_header=True, header_style="bold cyan")
+    table.add_column("Primitive", style="green")
+    table.add_column("Capability", style="yellow")
+    table.add_column("Risk", style="red")
+    table.add_column("Cost", justify="right")
+
+    for name in primitives:
+        spec = runtime.tool_broker.get_primitive_spec(name)
+        if spec:
+            table.add_row(name, spec.capability, spec.risk, str(spec.cost))
+        else:
+            table.add_row(name, "—", "—", "—")
+
+    console.print(table)
+    runtime.close()
     """Start the FastAPI API server."""
     try:
         import uvicorn

@@ -254,7 +254,7 @@ class TestPlatformWiring(unittest.TestCase):
 
     def test_no_model_uses_heuristic(self):
         """无model时使用HeuristicReasoner"""
-        from attack_agent.platform import CompetitionPlatform
+        from attack_agent.factory import build_team_runtime
         from attack_agent.platform_models import ChallengeDefinition
         from attack_agent.provider import InMemoryCompetitionProvider
         from attack_agent.reasoning import HeuristicReasoner
@@ -264,13 +264,13 @@ class TestPlatformWiring(unittest.TestCase):
                                 difficulty="easy", target="http://127.0.0.1:8000",
                                 description="test"),
         ])
-        platform = CompetitionPlatform(provider)
-        planner = platform.dispatcher.planner
+        runtime = build_team_runtime(provider)
+        planner = runtime._dispatcher.planner
         self.assertIsInstance(planner.reasoner, HeuristicReasoner)
 
     def test_with_model_uses_enhanced_planner(self):
         """有model时使用EnhancedAPGPlanner"""
-        from attack_agent.platform import CompetitionPlatform
+        from attack_agent.factory import build_team_runtime
         from attack_agent.platform_models import ChallengeDefinition
         from attack_agent.provider import InMemoryCompetitionProvider
         from attack_agent.enhanced_apg import EnhancedAPGPlanner
@@ -282,14 +282,14 @@ class TestPlatformWiring(unittest.TestCase):
                                 description="test"),
         ])
         model = StaticReasoningModel({"select_worker_profile": {"profile": "network", "reason": "test"}})
-        platform = CompetitionPlatform(provider, model=model)
-        planner = platform.dispatcher.planner
+        runtime = build_team_runtime(provider, model=model)
+        planner = runtime._dispatcher.planner
         self.assertIsInstance(planner, EnhancedAPGPlanner)
         self.assertIsInstance(planner.reasoner, LLMReasoner)
 
     def test_backward_compat_with_reasoner_param(self):
         """reasoner参数向后兼容 — model=None 时现在也使用 EnhancedAPGPlanner"""
-        from attack_agent.platform import CompetitionPlatform
+        from attack_agent.factory import build_team_runtime
         from attack_agent.platform_models import ChallengeDefinition
         from attack_agent.provider import InMemoryCompetitionProvider
         from attack_agent.reasoning import LLMReasoner, StaticReasoningModel
@@ -301,10 +301,10 @@ class TestPlatformWiring(unittest.TestCase):
                                 description="test"),
         ])
         reasoner = LLMReasoner(StaticReasoningModel({"select_worker_profile": {"profile": "network"}}))
-        platform = CompetitionPlatform(provider, reasoner=reasoner)
+        runtime = build_team_runtime(provider, reasoner=reasoner)
         # model=None now also uses EnhancedAPGPlanner with heuristic free-exploration
-        self.assertIsInstance(platform.dispatcher.planner, EnhancedAPGPlanner)
-        self.assertIsInstance(platform.dispatcher.planner.reasoner, LLMReasoner)
+        self.assertIsInstance(runtime._dispatcher.planner, EnhancedAPGPlanner)
+        self.assertIsInstance(runtime._dispatcher.planner.reasoner, LLMReasoner)
 
 
 class TestTaskPrompts(unittest.TestCase):

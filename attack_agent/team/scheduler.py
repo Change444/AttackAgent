@@ -9,6 +9,7 @@ Ported from CompetitionPlatform.solve_all() control flow.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from attack_agent.platform_models import EventType
 from attack_agent.team.blackboard import BlackboardService
@@ -19,6 +20,9 @@ from attack_agent.team.protocol import (
     TeamProject,
     to_dict,
 )
+
+if TYPE_CHECKING:
+    from attack_agent.team.runtime import TeamRuntime
 
 
 @dataclass
@@ -38,44 +42,77 @@ class SyncScheduler:
         project_id: str,
         manager: TeamManager,
         blackboard: BlackboardService,
+        runtime: TeamRuntime | None = None,
     ) -> list[StrategyAction]:
         """One scheduling cycle for a project.
 
         1. Read current state from Blackboard.
         2. Ask Manager for decisions.
         3. Record each decision as an event in the journal.
-        4. Return the list of StrategyActions taken.
+        4. If runtime has real executor and action requires execution,
+           call runtime._execute_solver_cycle() to run a real cycle.
+           (One call now covers BOOTSTRAP→REASON→EXPLORE advancement
+           + first EXPLORE execution, matching CompetitionPlatform.run_cycle.)
+        5. After execution, re-evaluate for converge/submit.
+        6. Return the list of StrategyActions taken.
         """
         events = blackboard.load_events(project_id)
         state = blackboard.rebuild_state(project_id)
 
         if state.project is None:
-            # project not yet admitted — nothing to do
             return []
 
         project = state.project
 
-        # terminal states — no action needed
         if project.status in ("done", "abandoned"):
             return []
 
-        # determine current stage from event history
         current_stage = _infer_stage(events, project.status)
 
-        # ask manager for the primary decision
         action = manager.decide_stage_transition(
             project_id, current_stage, events
         )
         if action is None:
             return []
 
-        # record the decision event
         _record_action(blackboard, action)
+
+        # Execute real solver cycle if runtime has executor capability
+        if (
+            runtime is not None
+            and runtime.use_real_executor
+            and action.action_type in (ActionType.LAUNCH_SOLVER, ActionType.STEER_SOLVER)
+        ):
+            result = runtime._execute_solver_cycle(project_id)
+            if result is not None:
+                # Post-execution: sync delta from StateGraphService to Blackboard
+                if runtime.state_sync is not None and runtime._state_graph is not None:
+                    runtime.state_sync.sync_delta(
+                        project_id, runtime._state_graph, blackboard
+                    )
+
+                # After execution, re-evaluate state for converge/submit
+                events = blackboard.load_events(project_id)
+                state = blackboard.rebuild_state(project_id)
+                if state.project is not None and state.project.status not in ("done", "abandoned"):
+                    follow_up = manager.decide_stage_transition(
+                        project_id, _infer_stage(events, state.project.status), events
+                    )
+                    if follow_up is not None:
+                        _record_action(blackboard, follow_up)
+                        if follow_up.action_type == ActionType.CONVERGE:
+                            submit_action = manager.decide_submit(project_id, events)
+                            _record_action(blackboard, submit_action)
+                            _execute_submit_if_possible(runtime, project_id, submit_action, blackboard)
+                            return [action, follow_up, submit_action]
+                        return [action, follow_up]
+                return [action]
 
         # for converge stage, also check submit
         if action.action_type == ActionType.CONVERGE:
             submit_action = manager.decide_submit(project_id, events)
             _record_action(blackboard, submit_action)
+            _execute_submit_if_possible(runtime, project_id, submit_action, blackboard)
             return [action, submit_action]
 
         return [action]
@@ -85,6 +122,7 @@ class SyncScheduler:
         project_id: str,
         manager: TeamManager,
         blackboard: BlackboardService,
+        runtime: TeamRuntime | None = None,
     ) -> TeamProject:
         """Run a project until done / abandoned.
 
@@ -109,7 +147,7 @@ class SyncScheduler:
             if state.project is not None and state.project.status in ("done", "abandoned"):
                 return state.project
 
-            self.schedule_cycle(project_id, manager, blackboard)
+            self.schedule_cycle(project_id, manager, blackboard, runtime)
 
         # max cycles reached — mark abandoned if not done
         state = blackboard.rebuild_state(project_id)
@@ -132,24 +170,37 @@ class SyncScheduler:
         manager: TeamManager,
         blackboard: BlackboardService,
         project_ids: list[str],
+        runtime: TeamRuntime | None = None,
     ) -> dict[str, TeamProject]:
         """Run all projects sequentially (concurrency=1)."""
         results: dict[str, TeamProject] = {}
         for pid in project_ids:
-            results[pid] = self.run_project(pid, manager, blackboard)
+            results[pid] = self.run_project(pid, manager, blackboard, runtime)
         return results
 
 
 # -- helpers --
 
 def _infer_stage(events: list, project_status: str) -> str:
-    """Infer current stage from event history and project status."""
+    """Infer current stage from event history and project status.
+
+    When project_upserted events carry a 'stage' field (written by
+    _execute_solver_cycle or solve_all), use the latest one as the
+    authoritative stage. Otherwise fall back to event-type inference.
+    """
     if project_status == "done":
         return "done"
     if project_status == "abandoned":
         return "abandoned"
 
-    # look at the most recent stage-relevant events
+    # Check latest project_upserted event for explicit stage
+    for ev in reversed(events):
+        if ev.event_type == EventType.PROJECT_UPSERTED.value:
+            stage = ev.payload.get("stage", "")
+            if stage in ("bootstrap", "reason", "explore", "converge", "done", "abandoned"):
+                return stage
+
+    # Fall back to event-type inference
     has_reason = False
     has_explore = False
     has_convergence_events = False
@@ -196,8 +247,46 @@ def _action_to_event_type(action_type: ActionType) -> str:
         ActionType.LAUNCH_SOLVER: EventType.WORKER_ASSIGNED.value,
         ActionType.STEER_SOLVER: EventType.REQUEUE.value,
         ActionType.SUBMIT_FLAG: EventType.SUBMISSION.value,
-        ActionType.CONVERGE: EventType.CANDIDATE_FLAG.value,
+        ActionType.CONVERGE: EventType.REQUEUE.value,
         ActionType.ABANDON: EventType.PROJECT_ABANDONED.value,
         ActionType.STOP_SOLVER: EventType.WORKER_TIMEOUT.value,
     }
     return mapping.get(action_type, EventType.REQUEUE.value)
+
+
+def _execute_submit_if_possible(
+    runtime: TeamRuntime | None,
+    project_id: str,
+    submit_action: StrategyAction,
+    blackboard: BlackboardService,
+) -> None:
+    """Execute real flag submission via runtime.submit_flag() if possible."""
+    if runtime is None or not runtime.use_real_executor:
+        return
+    if submit_action.action_type != ActionType.SUBMIT_FLAG:
+        return
+
+    state_graph = runtime._state_graph
+    if state_graph is None:
+        return
+    record = state_graph.projects.get(project_id)
+    if record is None or not record.candidate_flags:
+        return
+
+    # Extract first available flag from StateGraphService
+    dk, candidate = next(iter(record.candidate_flags.items()))
+    runtime.submit_flag(project_id, candidate.value, idea_id=dk)
+
+    # After submission, sync DONE state to Blackboard if flag was accepted
+    record = state_graph.projects.get(project_id)
+    if record is not None and record.snapshot.stage.value == "done":
+        blackboard.append_event(
+            project_id=project_id,
+            event_type=EventType.PROJECT_UPSERTED.value,
+            payload={
+                "challenge_id": record.snapshot.challenge.id,
+                "status": "done",
+                "stage": "done",
+            },
+            source="scheduler",
+        )

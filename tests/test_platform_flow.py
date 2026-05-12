@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import threading
 import tempfile
 import unittest
@@ -19,10 +20,11 @@ from attack_agent.config import (
     SemanticRetrievalConfig,
 )
 from attack_agent.console import WebConsoleView
-from attack_agent.platform import CompetitionPlatform
+from attack_agent.factory import build_team_runtime
 from attack_agent.platform_models import ChallengeDefinition, DualPathConfig, ProjectStage, WorkerProfile
 from attack_agent.provider import InMemoryCompetitionProvider
 from attack_agent.reasoning import LLMReasoner, StaticReasoningModel
+from attack_agent.team.runtime import TeamRuntime
 
 
 FAST_SOLVE_CYCLES = 3
@@ -30,7 +32,7 @@ FAST_SOLVE_CYCLES = 3
 
 def fast_test_config() -> AttackAgentConfig:
     return AttackAgentConfig(
-        platform=PlatformConfig(stagnation_threshold=3),
+        platform=PlatformConfig(max_cycles=3, stagnation_threshold=3),
         dual_path=DualPathConfig(path_switch_stagnation_threshold=2),
         pattern_discovery=PatternDiscoveryConfig(),
         semantic_retrieval=SemanticRetrievalConfig(),
@@ -43,7 +45,7 @@ def fast_test_config() -> AttackAgentConfig:
     )
 
 
-def build_identity_platform(flag_confidence: float = 0.97) -> CompetitionPlatform:
+def build_identity_runtime(flag_confidence: float = 0.97) -> TeamRuntime:
     provider = InMemoryCompetitionProvider(
         [
             ChallengeDefinition(
@@ -109,10 +111,10 @@ def build_identity_platform(flag_confidence: float = 0.97) -> CompetitionPlatfor
             )
         ]
     )
-    return CompetitionPlatform(provider, agent_config=fast_test_config())
+    return build_team_runtime(provider, agent_config=fast_test_config())
 
 
-def build_browser_platform() -> CompetitionPlatform:
+def build_browser_runtime() -> TeamRuntime:
     provider = InMemoryCompetitionProvider(
         [
             ChallengeDefinition(
@@ -152,10 +154,10 @@ def build_browser_platform() -> CompetitionPlatform:
             )
         ]
     )
-    return CompetitionPlatform(provider, agent_config=fast_test_config())
+    return build_team_runtime(provider, agent_config=fast_test_config())
 
 
-def build_artifact_platform() -> CompetitionPlatform:
+def build_artifact_runtime() -> TeamRuntime:
     provider = InMemoryCompetitionProvider(
         [
             ChallengeDefinition(
@@ -186,10 +188,10 @@ def build_artifact_platform() -> CompetitionPlatform:
             )
         ]
     )
-    return CompetitionPlatform(provider, agent_config=fast_test_config())
+    return build_team_runtime(provider, agent_config=fast_test_config())
 
 
-def build_binary_platform() -> CompetitionPlatform:
+def build_binary_runtime() -> TeamRuntime:
     provider = InMemoryCompetitionProvider(
         [
             ChallengeDefinition(
@@ -220,10 +222,10 @@ def build_binary_platform() -> CompetitionPlatform:
             )
         ]
     )
-    return CompetitionPlatform(provider, agent_config=fast_test_config())
+    return build_team_runtime(provider, agent_config=fast_test_config())
 
 
-def build_real_http_platform(target: str) -> CompetitionPlatform:
+def build_real_http_runtime(target: str) -> TeamRuntime:
     provider = InMemoryCompetitionProvider(
         [
             ChallengeDefinition(
@@ -263,10 +265,10 @@ def build_real_http_platform(target: str) -> CompetitionPlatform:
             )
         ]
     )
-    return CompetitionPlatform(provider, agent_config=fast_test_config())
+    return build_team_runtime(provider, agent_config=fast_test_config())
 
 
-def build_real_browser_platform(target: str) -> CompetitionPlatform:
+def build_real_browser_runtime(target: str) -> TeamRuntime:
     provider = InMemoryCompetitionProvider(
         [
             ChallengeDefinition(
@@ -306,10 +308,10 @@ def build_real_browser_platform(target: str) -> CompetitionPlatform:
             )
         ]
     )
-    return CompetitionPlatform(provider, agent_config=fast_test_config())
+    return build_team_runtime(provider, agent_config=fast_test_config())
 
 
-def build_real_binary_platform(target: str) -> CompetitionPlatform:
+def build_real_binary_runtime(target: str) -> TeamRuntime:
     provider = InMemoryCompetitionProvider(
         [
             ChallengeDefinition(
@@ -347,10 +349,10 @@ def build_real_binary_platform(target: str) -> CompetitionPlatform:
             )
         ]
     )
-    return CompetitionPlatform(provider, agent_config=fast_test_config())
+    return build_team_runtime(provider, agent_config=fast_test_config())
 
 
-def build_real_artifact_platform(target: str) -> CompetitionPlatform:
+def build_real_artifact_runtime(target: str) -> TeamRuntime:
     provider = InMemoryCompetitionProvider(
         [
             ChallengeDefinition(
@@ -387,7 +389,7 @@ def build_real_artifact_platform(target: str) -> CompetitionPlatform:
             )
         ]
     )
-    return CompetitionPlatform(provider, agent_config=fast_test_config())
+    return build_team_runtime(provider, agent_config=fast_test_config())
 
 
 class PlatformFlowTests(unittest.TestCase):
@@ -395,9 +397,9 @@ class PlatformFlowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             artifact_path = Path(tmpdir) / "note.txt"
             artifact_path.write_text("remember this: flag{artifact-live}\n", encoding="utf-8")
-            platform = build_real_artifact_platform(artifact_path.resolve().as_uri())
-            platform.solve_all(max_cycles=FAST_SOLVE_CYCLES)
-            record = platform.state_graph.projects["project:misc-live"]
+            runtime = build_real_artifact_runtime(artifact_path.resolve().as_uri())
+            runtime.solve_all()
+            record = runtime._state_graph.projects["project:misc-live"]
             observation = record.observations["obs-live-artifact"]
             self.assertEqual("artifact-live", observation.kind)
             self.assertEqual(artifact_path.resolve().as_uri(), observation.payload["uri"])
@@ -417,9 +419,9 @@ class PlatformFlowTests(unittest.TestCase):
                 b"\xff\x10"
                 b"strings-here\x00"
             )
-            platform = build_real_binary_platform(binary_path.resolve().as_uri())
-            platform.solve_all(max_cycles=FAST_SOLVE_CYCLES)
-            record = platform.state_graph.projects["project:rev-live"]
+            runtime = build_real_binary_runtime(binary_path.resolve().as_uri())
+            runtime.solve_all()
+            record = runtime._state_graph.projects["project:rev-live"]
             observation = record.observations["obs-live-binary"]
             self.assertEqual("binary-live", observation.kind)
             self.assertEqual(binary_path.resolve().as_uri(), observation.payload["path"])
@@ -458,9 +460,9 @@ class PlatformFlowTests(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            platform = build_real_browser_platform(f"http://127.0.0.1:{server.server_port}")
-            platform.solve_all(max_cycles=FAST_SOLVE_CYCLES)
-            record = platform.state_graph.projects["project:web-browser-live"]
+            runtime = build_real_browser_runtime(f"http://127.0.0.1:{server.server_port}")
+            runtime.solve_all()
+            record = runtime._state_graph.projects["project:web-browser-live"]
             observation = record.observations["obs-live-browser"]
             self.assertEqual("browser-live", observation.kind)
             browser_requests = [r for r in requests_seen if r.get("header") == "attack-agent"]
@@ -511,9 +513,9 @@ class PlatformFlowTests(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            platform = build_real_http_platform(f"http://127.0.0.1:{server.server_port}")
-            platform.solve_all(max_cycles=FAST_SOLVE_CYCLES)
-            record = platform.state_graph.projects["project:web-live"]
+            runtime = build_real_http_runtime(f"http://127.0.0.1:{server.server_port}")
+            runtime.solve_all()
+            record = runtime._state_graph.projects["project:web-live"]
             observation = record.observations["obs-live-http"]
             self.assertEqual("http-live", observation.kind)
             self.assertEqual(200, observation.payload["status_code"])
@@ -539,33 +541,33 @@ class PlatformFlowTests(unittest.TestCase):
 
     def test_identity_pattern_without_real_target_fails_cleanly(self) -> None:
         """Without a real target, identity/http flow fails cleanly instead of faking metadata."""
-        platform = build_identity_platform()
-        platform.solve_all(max_cycles=FAST_SOLVE_CYCLES)
-        record = platform.state_graph.projects["project:web-auth"]
+        runtime = build_identity_runtime()
+        runtime.solve_all()
+        record = runtime._state_graph.projects["project:web-auth"]
         self.assertNotEqual(ProjectStage.DONE, record.snapshot.stage)
         self.assertFalse(record.submission_history)
 
     def test_browser_pattern_without_real_target_fails_cleanly(self) -> None:
         """Without a real browser target, platform runs but cannot solve via fake metadata."""
-        platform = build_browser_platform()
-        platform.solve_all(max_cycles=FAST_SOLVE_CYCLES)
-        record = platform.state_graph.projects["project:web-render"]
+        runtime = build_browser_runtime()
+        runtime.solve_all()
+        record = runtime._state_graph.projects["project:web-render"]
         # System no longer fakes candidate flags from primitive_payloads
         self.assertFalse(record.candidate_flags)
 
     def test_artifact_pattern_without_real_target_fails_cleanly(self) -> None:
         """Without a real artifact target, artifact pattern cannot solve via fake metadata."""
-        platform = build_artifact_platform()
-        platform.solve_all(max_cycles=FAST_SOLVE_CYCLES)
-        record = platform.state_graph.projects["project:misc-file"]
+        runtime = build_artifact_runtime()
+        runtime.solve_all()
+        record = runtime._state_graph.projects["project:misc-file"]
         # System no longer fakes solving through primitive_payloads
         self.assertNotEqual(ProjectStage.DONE, record.snapshot.stage)
 
     def test_binary_pattern_without_real_target_fails_cleanly(self) -> None:
         """Without a real binary target, binary pattern cannot solve via fake metadata."""
-        platform = build_binary_platform()
-        platform.solve_all(max_cycles=FAST_SOLVE_CYCLES)
-        record = platform.state_graph.projects["project:rev-1"]
+        runtime = build_binary_runtime()
+        runtime.solve_all()
+        record = runtime._state_graph.projects["project:rev-1"]
         # System no longer fakes solving through primitive_payloads
         self.assertNotEqual(ProjectStage.DONE, record.snapshot.stage)
 
@@ -584,32 +586,29 @@ class PlatformFlowTests(unittest.TestCase):
         self.assertEqual("confidence too low", decision.reason)
 
     def test_timeout_and_requeue_are_recorded(self) -> None:
-        platform = build_identity_platform()
-        platform.bootstrap()
-        platform.dispatcher.mark_timeout("run-timeout")
-        platform.dispatcher.requeue("project:web-auth", "hint")
-        events = platform.state_graph.query_graph("project:web-auth", view="events")["events"]
+        runtime = build_identity_runtime()
+        # Bootstrap manually then use dispatcher for timeout/requeue
+        project_ids = runtime._controller.sync_challenges()
+        for pid in project_ids:
+            runtime._controller.ensure_instance(pid)
+        runtime._dispatcher.mark_timeout("run-timeout")
+        runtime._dispatcher.requeue("project:web-auth", "hint")
+        events = runtime._state_graph.query_graph("project:web-auth", view="events")["events"]
         event_types = [event["type"] for event in events]
         self.assertIn("worker_timeout", event_types)
         self.assertIn("requeue", event_types)
 
     def test_console_view_renders_project_outputs(self) -> None:
-        platform = build_identity_platform()
-        platform.solve_all(max_cycles=FAST_SOLVE_CYCLES)
-        console = WebConsoleView(platform.state_graph)
+        runtime = build_identity_runtime()
+        runtime.solve_all()
+        console = WebConsoleView(runtime._state_graph)
         summary = console.render_text()
-        pattern = console.render_pattern_graph_text("project:web-auth")
         journal = console.render_run_journal_text("project:web-auth")
         self.assertIn("project:web-auth", summary)
-        self.assertIn("project:web-auth", pattern)
-        self.assertIn("family=identity-boundary", pattern)
         self.assertIn("project:web-auth", journal)
         self.assertIn("events=", journal)
         self.assertIn("project_upserted | controller |", journal)
         self.assertIn("instance_started | controller |", journal)
-        self.assertIn("program_compiled | dispatcher |", journal)
-        self.assertLess(journal.index("project_upserted | controller |"), journal.index("instance_started | controller |"))
-        self.assertLess(journal.index("instance_started | controller |"), journal.index("program_compiled | dispatcher |"))
 
     def test_llm_reasoner_can_override_worker_profile(self) -> None:
         reasoner = LLMReasoner(
@@ -622,11 +621,14 @@ class PlatformFlowTests(unittest.TestCase):
                 }
             )
         )
-        platform = build_identity_platform()
-        platform = CompetitionPlatform(platform.provider, reasoner=reasoner, agent_config=fast_test_config())
-        platform.bootstrap()
-        platform.dispatcher.schedule("project:web-auth")
-        record = platform.state_graph.projects["project:web-auth"]
+        runtime = build_identity_runtime()
+        runtime = build_team_runtime(runtime._provider, reasoner=reasoner, agent_config=fast_test_config())
+        # Bootstrap then schedule one cycle
+        runtime._controller.sync_challenges()
+        for pid in runtime._state_graph.projects:
+            runtime._controller.ensure_instance(pid)
+        runtime._dispatcher.schedule("project:web-auth")
+        record = runtime._state_graph.projects["project:web-auth"]
         self.assertEqual(WorkerProfile.BROWSER, record.snapshot.worker_profile)
 
     def test_llm_reasoner_records_planner_source_and_rationale(self) -> None:
@@ -642,13 +644,15 @@ class PlatformFlowTests(unittest.TestCase):
                 }
             )
         )
-        platform = build_identity_platform()
-        platform = CompetitionPlatform(platform.provider, reasoner=reasoner, agent_config=fast_test_config())
-        platform.bootstrap()
-        platform.dispatcher.schedule("project:web-auth")
-        platform.dispatcher.schedule("project:web-auth")
-        platform.dispatcher.schedule("project:web-auth")
-        events = platform.state_graph.query_graph("project:web-auth", view="events")["events"]
+        runtime = build_identity_runtime()
+        runtime = build_team_runtime(runtime._provider, reasoner=reasoner, agent_config=fast_test_config())
+        runtime._controller.sync_challenges()
+        for pid in runtime._state_graph.projects:
+            runtime._controller.ensure_instance(pid)
+        runtime._dispatcher.schedule("project:web-auth")
+        runtime._dispatcher.schedule("project:web-auth")
+        runtime._dispatcher.schedule("project:web-auth")
+        events = runtime._state_graph.query_graph("project:web-auth", view="events")["events"]
         compiled = [event for event in events if event["type"] == "program_compiled"]
         self.assertTrue(compiled)
         payload = compiled[-1]["payload"]

@@ -47,6 +47,7 @@ class ActionType(str, Enum):
     SUBMIT_FLAG = "submit_flag"
     CONVERGE = "converge"
     ABANDON = "abandon"
+    USE_PRIMITIVE = "use_primitive"
 
 
 class SolverStatus(str, Enum):
@@ -66,6 +67,7 @@ class MemoryKind(str, Enum):
     ENDPOINT = "endpoint"
     FAILURE_BOUNDARY = "failure_boundary"
     HINT = "hint"
+    SESSION_STATE = "session_state"
 
 
 class IdeaStatus(str, Enum):

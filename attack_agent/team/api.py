@@ -17,6 +17,10 @@ except ImportError:
 
 from attack_agent.team.protocol import HumanDecisionChoice, MemoryKind, ReviewRequest, to_dict
 from attack_agent.team.runtime import TeamRuntime
+from attack_agent.team.benchmark import BenchmarkRunner
+from attack_agent.team.blackboard_config import BlackboardConfig
+from attack_agent.team.blackboard import BlackboardService
+from attack_agent.team.tool_broker import ToolRequest
 
 
 def make_api_router(runtime: TeamRuntime) -> APIRouter:
@@ -93,6 +97,110 @@ def make_api_router(runtime: TeamRuntime) -> APIRouter:
         if result is None:
             raise HTTPException(status_code=404, detail="Review not found or already resolved")
         return to_dict(result)
+
+    # -- tool broker endpoints --
+
+    @router.get("/tools")
+    def list_tools(profile: str = "") -> list[dict[str, Any]]:
+        primitives = runtime.list_available_primitives(profile)
+        specs = []
+        for name in primitives:
+            spec = runtime.tool_broker.get_primitive_spec(name)
+            if spec:
+                specs.append(to_dict(spec))
+            else:
+                specs.append({"name": name, "capability": "—"})
+        return specs
+
+    @router.get("/tools/{name}")
+    def get_tool_spec(name: str) -> dict[str, Any]:
+        spec = runtime.tool_broker.get_primitive_spec(name)
+        if spec is None:
+            raise HTTPException(status_code=404, detail="Primitive not found")
+        return to_dict(spec)
+
+    @router.post("/projects/{project_id}/request-tool")
+    def request_tool(
+        project_id: str,
+        primitive_name: str = "",
+        solver_id: str = "",
+        risk_level: str = "low",
+        budget_request: float = 0.0,
+        reason: str = "",
+    ) -> dict[str, Any]:
+        if not primitive_name:
+            raise HTTPException(status_code=400, detail="primitive_name required")
+        result = runtime.request_tool(
+            project_id=project_id,
+            solver_id=solver_id,
+            primitive_name=primitive_name,
+            risk_level=risk_level,
+            budget_request=budget_request,
+            reason=reason,
+        )
+        return to_dict(result)
+
+    # -- replay / evaluation endpoints --
+
+    @router.get("/projects/{project_id}/replay-steps")
+    def get_replay_steps(project_id: str) -> list[dict[str, Any]]:
+        steps = runtime.replay_steps(project_id)
+        results = []
+        for s in steps:
+            snap = s.state_snapshot
+            results.append({
+                "step_index": s.step_index,
+                "event_type": s.event.event_type,
+                "timestamp": s.timestamp,
+                "event_payload": s.event.payload,
+                "state_snapshot": {
+                    "project": to_dict(snap.project) if snap.project else None,
+                    "fact_count": len(snap.facts),
+                    "idea_count": len(snap.ideas),
+                    "session_count": len(snap.sessions),
+                    "project_status": snap.project.status if snap.project else None,
+                },
+            })
+        return results
+
+    @router.get("/projects/{project_id}/metrics")
+    def get_metrics(project_id: str) -> dict[str, Any]:
+        metrics = runtime.evaluate(project_id)
+        return to_dict(metrics)
+
+    @router.post("/regression")
+    def run_regression(
+        baseline_db: str = "",
+        challenge_ids: list[str] = None,
+    ) -> dict[str, Any]:
+        if not baseline_db:
+            raise HTTPException(status_code=400, detail="baseline_db path required")
+
+        baseline_bb = BlackboardService(BlackboardConfig(db_path=baseline_db))
+        runner = BenchmarkRunner()
+
+        if challenge_ids is None:
+            challenge_ids = []
+            cursor = baseline_bb._db.cursor()
+            cursor.execute("SELECT DISTINCT project_id FROM events")
+            for row in cursor.fetchall():
+                challenge_ids.append(row[0])
+            cursor2 = runtime.blackboard._db.cursor()
+            cursor2.execute("SELECT DISTINCT project_id FROM events")
+            for row in cursor2.fetchall():
+                if row[0] not in challenge_ids:
+                    challenge_ids.append(row[0])
+
+        report = runner.run_regression(challenge_ids, runtime.blackboard, baseline_bb)
+        result = {
+            "overall_status": report.overall_status,
+            "regressions": report.regressions,
+            "improvements": report.improvements,
+            "baseline_metrics": {k: to_dict(v) for k, v in report.baseline_metrics.items()},
+            "current_metrics": {k: to_dict(v) for k, v in report.current_metrics.items()},
+        }
+        baseline_bb.close()
+        return result
 
     return router
 

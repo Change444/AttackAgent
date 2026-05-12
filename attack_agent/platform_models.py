@@ -55,6 +55,7 @@ class EventType(str, Enum):
     PATTERN_DISCOVERED = "pattern_discovered"
     SEMANTIC_RETRIEVAL = "semantic_retrieval"
     FREE_EXPLORATION_PLAN = "free_exploration_plan"
+    TOOL_REQUEST = "tool_request"
 
 
 class PatternNodeKind(str, Enum):

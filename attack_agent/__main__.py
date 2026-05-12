@@ -17,7 +17,7 @@ from pathlib import Path
 from .config import AttackAgentConfig
 from .console import WebConsoleView
 from .model_adapter import build_model_from_config, is_available
-from .platform import CompetitionPlatform
+from .factory import build_team_runtime
 from .platform_models import ChallengeDefinition
 from .provider import InMemoryCompetitionProvider, LocalHTTPCompetitionProvider
 from .ctfd_provider import CTFdCompetitionProvider
@@ -197,17 +197,17 @@ def main(argv: list[str] | None = None) -> None:
     )
     model = _build_model(agent_config)
 
-    platform = CompetitionPlatform(provider, model=model, agent_config=agent_config)
+    runtime = build_team_runtime(provider, model=model, agent_config=agent_config)
 
     print("AttackAgent starting...", file=sys.stderr)
-    platform.solve_all(max_cycles=agent_config.platform.max_cycles)
+    runtime.solve_all()
 
     # Print summary
-    view = WebConsoleView(platform.state_graph)
+    view = WebConsoleView(runtime._state_graph)
     print(view.render_text())
 
     if args.verbose:
-        for project_id in platform.state_graph.projects:
+        for project_id in runtime._state_graph.projects:
             print(f"\n--- Run journal: {project_id} ---")
             print(view.render_run_journal_text(project_id))
             print(f"\n--- Pattern graph: {project_id} ---")
@@ -215,10 +215,10 @@ def main(argv: list[str] | None = None) -> None:
 
     # Summary stats
     solved = sum(
-        1 for r in platform.state_graph.projects.values()
+        1 for r in runtime._state_graph.projects.values()
         if r.snapshot.stage.value == "done"
     )
-    total = len(platform.state_graph.projects)
+    total = len(runtime._state_graph.projects)
     print(f"\nResult: {solved}/{total} challenges solved.", file=sys.stderr)
 
 

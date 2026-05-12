@@ -1,4 +1,5 @@
-from .platform import CompetitionPlatform
+from .factory import build_team_runtime
+from .team.runtime import TeamRuntime, TeamRuntimeConfig
 from .reasoning import HeuristicReasoner, LLMReasoner, StaticReasoningModel, ReasoningModel
 from .constraints import (
     LightweightSecurityShell,
@@ -61,7 +62,9 @@ from .config import (
 from .platform_models import PathType, PlanningContext, DualPathConfig, FreeExplorationPlanner, EmbeddingModel
 
 __all__ = [
-    "CompetitionPlatform",
+    "TeamRuntime",
+    "TeamRuntimeConfig",
+    "build_team_runtime",
     "HeuristicReasoner",
     "LLMReasoner",
     "StaticReasoningModel",

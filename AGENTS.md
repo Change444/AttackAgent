@@ -1,102 +1,69 @@
-# AttackAgent — AGENTS.md
+# AttackAgent - Agent Instructions
 
 ## Project
 
-AttackAgent 是面向授权靶场和 CTF 竞赛的渗透测试 Agent。设计理念：**约束推理而非候选选择**——框架引导模型决策，不限制创造力。双路径架构（结构化 + 自由探索），外部安全壳确保操作在授权范围内。
+AttackAgent is a Python 3.10+ agent runtime for authorized CTF, training range, and security research environments.
 
-语言：中文文档（代码和标识符英文）。技术栈：Python 3.10+，stdlib-first，可选 openai/anthropic/sentence-transformers。
+The product direction is a **multi-Solver team runtime** with Manager, Solver, Observer, Human Review, Blackboard, MergeHub, PolicyHarness, and ToolBroker. The current implementation is not fully there yet. It is a hybrid runtime where `TeamRuntime` is the entry point, while `Dispatcher`, `WorkerRuntime`, and `StateGraphService` still carry much of the real solving behavior.
+
+## Read First
+
+Before implementing architecture or team-runtime changes, read:
+
+1. `docs/ARCHITECTURE.md`
+2. `docs/TEAM_EVOLUTION_ROADMAP.md`
+3. `docs/CONVENTIONS.md`
+4. Source files touched by the change
+
+Use `docs/CHANGELOG.md` only as history, not as the current design authority.
 
 ## Quick Start
 
 ```bash
-# 运行全部测试
 python -m unittest discover tests/
-
-# 纯规则模式
 python -m attack_agent --config config/settings.json
-
-# 对接 HTTP 靶场
 python -m attack_agent --provider-url http://127.0.0.1:8080
-
-# 接入 LLM
 python -m attack_agent --config config/settings.json --model openai --verbose
 ```
 
-Python API（无需 LLM）：
+Python API:
+
 ```python
-from attack_agent.platform import CompetitionPlatform
+from attack_agent.factory import build_team_runtime
 from attack_agent.provider import InMemoryCompetitionProvider
-from attack_agent.platform_models import ChallengeDefinition
+
 provider = InMemoryCompetitionProvider([...])
-platform = CompetitionPlatform(provider)
-platform.solve_all()
+runtime = build_team_runtime(provider)
+runtime.solve_all()
 ```
 
-## Architecture (5-Layer)
+## Current Architecture Map
 
-| 层 | 核心模块 | 职责 |
-|----|----------|------|
-| 控制层 | CompetitionPlatform (`platform.py`) | 挑战生命周期，配置加载 |
-| 调度层 | Dispatcher (`dispatcher.py`) + SecurityShell (`constraints.py`) | 状态机调度，策略逻辑(stagnation/submit)，安全壳验证 |
-| 规划层 | EnhancedAPGPlanner (`enhanced_apg.py`) | 双路径规划，路径选择/切换 |
-| 执行层 | WorkerRuntime (`runtime.py`) | 9 个原语执行，session 持久化 |
-| 状态层 | StateGraphService (`state_graph.py`) | 单一真实源，事件日志 |
+| Area | Current Reality | Target Direction |
+|---|---|---|
+| Entry | `build_team_runtime()` + `TeamRuntime.solve_all()` | Keep as public entry |
+| Execution | `Dispatcher` -> `WorkerRuntime` | Gradually route through SolverSession + ToolBroker |
+| Runtime state | `StateGraphService` plus Blackboard sync | Blackboard as decision source, StateGraph as per-solver scratchpad |
+| Scheduling | `SyncScheduler` calls `TeamManager`, then legacy execution | Manager consumes compiled context, reviews, observer reports, budgets, and solver states |
+| Memory | `MemoryService`, `IdeaService`, `ContextCompiler` exist | Memory becomes required input for Manager and Solver planning |
+| Collaboration | `MergeHub` exists, no formal KnowledgePacket protocol | Solver output flows through KnowledgePacket -> MergeHub -> Blackboard/inbox |
+| Review | `HumanReviewGate` exists | Review decisions pause/resume real actions |
+| Observer | Manual/advisory observer | Observer runs in scheduling loop and produces actionable steering |
+| UI | CLI/API only; old `WebConsoleView` is text output | Web UI/GUI console after API semantics stabilize |
 
-完整架构：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+## Non-Negotiable Rules
 
-## Module Map
+- Only authorized targets and local/range fixtures are allowed.
+- Do not make Solver code write global protocol state directly; route through Manager/MergeHub/Blackboard services.
+- Do not treat complete chat history as memory. Use structured events, facts, ideas, failure boundaries, evidence references, and summaries.
+- Do not mix `IdeaEntry`, `CandidateFlag`, and `StrategyAction` in the same event semantics.
+- Keep compatibility with the current test baseline unless a roadmap item explicitly changes the behavior.
+- Prefer small vertical migrations over broad rewrites.
 
-| 模块 | 文件 | 职责 |
-|------|------|------|
-| CompetitionPlatform | `platform.py` | 主入口，model=None/xxx 分支构建不同规划器 |
-| CLI | `__main__.py` | `python -m attack_agent` 命令行接口 |
-| Dispatcher | `dispatcher.py` | 状态机调度，策略逻辑（stagnation/submit/stage） |
-| EnhancedAPGPlanner | `enhanced_apg.py` | 双路径规划 |
-| ConstraintAwareReasoner | `constraint_aware_reasoner.py` | LLM 约束推理 |
-| HeuristicFreeExplorationPlanner | `heuristic_free_exploration.py` | 无 LLM 自由探索 |
-| PathSelectionStrategy | `path_selection.py` | 置信度/复杂度路径选择 |
-| PatternInjector | `pattern_injector.py` | 动态模式回注 |
-| DynamicPatternComposer | `dynamic_pattern_composer.py` | 成功案例模式发现 |
-| SemanticRetrievalEngine | `semantic_retrieval.py` | TF-IDF + embedding 混合检索 |
-| PlaywrightBrowserInspector / StdlibBrowserInspector | `browser_adapter.py` | JS 渲染 + script 读取（Playwright），stdlib 回退 |
-| RequestsHttpClient / StdlibHttpClient | `http_adapter.py` | multipart + Basic Auth + Bearer Auth + SSL bypass（requests），stdlib 回退 |
-| WorkerRuntime (session-materialize) | `runtime.py` | CSRF 预取(form/meta/header) + JSON body + auth token 持久化 |
-| WorkerRuntime (artifact-scan) | `runtime.py` | ZIP/tar 内容提取(content_preview) + MIME 映射(_guess_content_type) + 预览 512→4096 + temp_dir 延迟清理 |
-| LightweightSecurityShell | `constraints.py` | 执行前约束验证（直接持有 SecurityConfig） |
-| SubmitClassifier / TaskPromptCompiler | `strategy.py` | 提交分类 + 任务编译 |
-| ObservationSummarizer | `observation_summarizer.py` | 观测→有限长度文本 |
-| AttackAgentConfig | `config.py` | JSON + dataclass 配置 |
+## Tests
 
-## Key Rules
+Run focused tests for the touched area, then the full suite when feasible:
 
-- 安全壳在 runtime 执行前验证；critical 违规阻止执行
-- 参数优先级：`step.parameters` > metadata defaults > hardcoded defaults
-- SecurityConstraints 已删除，SecurityConfig 直接作为 LightweightSecurityShell 约束源，见 `attack_agent/constraints.py` 和 `attack_agent/config.py`
-- 原语无配置时干净失败（`_clean_fail`），不再假装工作
-- CodeSandbox 规则见 `attack_agent/apg.py` SAFE_BUILTINS / SAFE_IMPORTS（class/with/raise 已允许，lambda/global/nonlocal/delete/async 仍禁止；SAFE_IMPORTS 含 zlib/csv）
-- 族关键词见 `attack_agent/apg.py` FAMILY_KEYWORDS（14 族：identity/input-interpreter/reflection-render/file-archive/encoding/binary + ssrf-server/ssti-template/csrf-state/idor-access/crypto-math/pwn-memory/protocol-logic/race-condition）
-- 配置字段定义见 `attack_agent/config.py` 和 `config/settings.json`
-- 可选依赖见 `pyproject.toml`
-
-**Dual-Path Planning**:
-- model=None → APGPlanner + HeuristicFreeExplorationPlanner（纯规则双路径）
-- model=xxx → APGPlanner + ConstraintAwareReasoner（LLM 双路径）
-- PathSelectionStrategy 动态选择；ObservationSummarizer 共享注入观测内容
-- switch_path() 自动切换：STRUCTURED→FREE_EXPLORATION（停滞≥3次时）+ FREE_EXPLORATION→STRUCTURED（预算耗尽或置信度≥0.7时回切）
-- 多族组合：_compose_multi_family_candidates() 融合 2 族步骤（观察→主族 + 操作→副族 + 验证→主族，副族得分≥0.7×主族得分时组合）
-
-## Known Limitations (摘要)
-
-当前系统**解题率约 25-30%**（已可连接真实 CTFd 靶场）。关键差距：
-- browser-inspect 不执行 JS、session-materialize 无多步认证 → web 题 70% 不能解
-- code-sandbox 仍禁止 lambda + 无 crypto 库 → 高级密码题不能解（class/with/raise + zlib/csv 已放开）
-- parse_source/program_fragment 仍需 metadata 或 LLM 提供（14 族关键词已覆盖主流 CTF 类别；URL/login_url 注入已实现；多族组合已实现；路径自动切换已实现）
-
-**完整问题清单 + 四阶段解决计划**：见 [docs/CHANGELOG.md](docs/CHANGELOG.md) "Current Limitations & Roadmap" 章节
-
-## Navigation
-
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — 架构决策 + 概念设计
-- [docs/CONVENTIONS.md](docs/CONVENTIONS.md) — 编码规则 + 项目约束
-- [docs/CHANGELOG.md](docs/CHANGELOG.md) — 版本历史 + 已完成里程碑
-- [README.md](README.md) — 项目介绍
+```bash
+python -m unittest discover tests/
+```

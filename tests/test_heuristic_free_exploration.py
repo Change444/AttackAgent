@@ -184,16 +184,16 @@ class TestHeuristicFreeExplorationPlanner(unittest.TestCase):
 
     def test_integration_model_none_creates_enhanced_planner(self):
         """model=None should now create EnhancedAPGPlanner with HeuristicFreeExplorationPlanner"""
-        from attack_agent.platform import CompetitionPlatform
+        from attack_agent.factory import build_team_runtime
         from attack_agent.enhanced_apg import EnhancedAPGPlanner
         provider = InMemoryCompetitionProvider([
             ChallengeDefinition(id="c1", name="Test", category="web",
                                 difficulty="easy", target="http://127.0.0.1:8000",
                                 description="test"),
         ])
-        platform = CompetitionPlatform(provider, model=None)
-        self.assertIsInstance(platform.dispatcher.planner, EnhancedAPGPlanner)
-        self.assertIsInstance(platform.dispatcher.planner.free_exploration_planner, HeuristicFreeExplorationPlanner)
+        runtime = build_team_runtime(provider, model=None)
+        self.assertIsInstance(runtime._dispatcher.planner, EnhancedAPGPlanner)
+        self.assertIsInstance(runtime._dispatcher.planner.free_exploration_planner, HeuristicFreeExplorationPlanner)
 
     def test_generate_plan_steps_have_challenge_target_urls(self):
         """Steps in generated plan should have challenge target URL injected"""

@@ -74,7 +74,7 @@ Result: 1/1 challenges solved.
 ### Python API
 
 ```python
-from attack_agent.platform import CompetitionPlatform
+from attack_agent.factory import build_team_runtime
 from attack_agent.provider import InMemoryCompetitionProvider
 from attack_agent.platform_models import ChallengeDefinition
 
@@ -89,8 +89,8 @@ provider = InMemoryCompetitionProvider([
         metadata={"flag": "flag{test123}", "hint": "Look at the login page."},
     ),
 ])
-platform = CompetitionPlatform(provider)
-platform.solve_all()
+runtime = build_team_runtime(provider)
+runtime.solve_all()
 ```
 
 ---
@@ -653,10 +653,10 @@ LLM 生成的代码可能使用不允许的 Python 语法（如 `lambda`、`glob
 
 ## 9. Python API 进阶用法
 
-### 9.1 直接使用 CompetitionPlatform
+### 9.1 直接使用 TeamRuntime
 
 ```python
-from attack_agent.platform import CompetitionPlatform
+from attack_agent.factory import build_team_runtime
 from attack_agent.provider import InMemoryCompetitionProvider
 from attack_agent.platform_models import ChallengeDefinition
 from attack_agent.config import AttackAgentConfig
@@ -675,8 +675,8 @@ challenges = [
 
 config = AttackAgentConfig.from_defaults()
 provider = InMemoryCompetitionProvider(challenges)
-platform = CompetitionPlatform(provider, agent_config=config)
-platform.solve_all()
+runtime = build_team_runtime(provider, agent_config=config)
+runtime.solve_all()
 ```
 
 ### 9.2 接入 LLM 的 Python API
@@ -693,8 +693,8 @@ config.model = ModelConfig(
 )
 
 model = build_model_from_config(config.model)
-platform = CompetitionPlatform(provider, model=model, agent_config=config)
-platform.solve_all()
+runtime = build_team_runtime(provider, model=model, agent_config=config)
+runtime.solve_all()
 ```
 
 ### 9.3 自定义 Provider
@@ -739,7 +739,7 @@ class MyReasoner(HeuristicReasoner):
             return WorkerProfile.SOLVER
         return super().choose_profile(challenge, allowed_profiles)
 
-platform = CompetitionPlatform(provider, reasoner=MyReasoner(), agent_config=config)
+runtime = build_team_runtime(provider, reasoner=MyReasoner(), agent_config=config)
 ```
 
 ### 9.5 运行测试
