@@ -83,6 +83,8 @@ Acceptance tests:
 
 ## 5. Phase L2 - Manager Context Becomes Mandatory
 
+Status: complete
+
 Goal: make Manager decisions depend on compiled team context rather than raw stage inference only.
 
 Implementation plan:
