@@ -120,7 +120,6 @@ def build_team_runtime(
         security_config=security_config,
         stagnation_threshold=stag_thr,
         confidence_threshold=conf_thr,
-        provider=provider,
     )
 
     # Build TeamRuntimeConfig from agent_config

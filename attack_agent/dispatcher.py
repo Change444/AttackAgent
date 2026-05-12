@@ -16,12 +16,10 @@ class Dispatcher:
                  worker_pool: WorkerPool | None = None,
                  security_config: SecurityConfig | None = None,
                  stagnation_threshold: int = 8,
-                 confidence_threshold: float = 0.6,
-                 provider=None) -> None:
+                 confidence_threshold: float = 0.6) -> None:
         self.state_graph = state_graph
         self.runtime = runtime
         self.planner = planner
-        self.provider = provider
         self.worker_pool = worker_pool or WorkerPool()
         self.security_shell = LightweightSecurityShell(security_config)
         self.stagnation_threshold = stagnation_threshold
@@ -138,18 +136,6 @@ class Dispatcher:
             self.state_graph.append_event(event)
         self._record_outcome(record, program, outcome)
         self._update_after_outcome(record, program, outcome)
-
-        # Auto-submit high-confidence candidate flags
-        if outcome.candidate_flags and record.snapshot.instance is not None:
-            existing_keys = set(record.candidate_flags.keys())
-            for candidate in outcome.candidate_flags:
-                decision = self.submit_classifier.classify(record.snapshot, candidate, existing_keys)
-                if decision.accepted and not candidate.submitted:
-                    try:
-                        self.submit_candidate(project_id, candidate.dedupe_key)
-                        print(f"  Auto-submitted: {candidate.value} (confidence={candidate.confidence})", flush=True)
-                    except Exception as e:
-                        print(f"  Auto-submit failed for {candidate.value}: {e}", flush=True)
 
         if skip_stage_decisions:
             # Return results to TeamRuntime — no stage/abandon decisions
@@ -287,40 +273,3 @@ class Dispatcher:
         repeated_dead_ends = len(record.tombstones) >= 2
         low_novelty = all(failure.status == "failed" for failure in recent_failures) if recent_failures else True
         return repeated_dead_ends or low_novelty
-
-    def submit_candidate(self, project_id: str, dedupe_key: str) -> dict[str, str | bool]:
-        """Submit a candidate flag through the Controller."""
-        record = self.state_graph.projects[project_id]
-        candidate = record.candidate_flags[dedupe_key]
-        # Provider submit
-        if record.snapshot.instance is not None:
-            result = self.provider.submit_flag(record.snapshot.instance.instance_id, candidate.value)
-            candidate.submitted = True
-            payload = {"dedupe_key": dedupe_key, "accepted": result.accepted, "message": result.message, "status": result.status}
-            self.state_graph.append_event(
-                Event(
-                    type=EventType.SUBMISSION,
-                    project_id=project_id,
-                    run_id=f"submit-{project_id}",
-                    payload=payload,
-                    source="dispatcher",
-                )
-            )
-            if result.accepted:
-                record.snapshot.stage = ProjectStage.DONE
-                record.snapshot.status = "solved"
-                self.state_graph.append_event(
-                    Event(
-                        type=EventType.PROJECT_DONE,
-                        project_id=project_id,
-                        run_id=f"done-{project_id}",
-                        payload={"accepted_flag": candidate.value},
-                        source="dispatcher",
-                    )
-                )
-                try:
-                    self.provider.stop_challenge(record.snapshot.instance.instance_id)
-                except Exception:
-                    pass
-            return payload
-        return {"dedupe_key": dedupe_key, "accepted": False, "message": "no instance", "status": "error"}

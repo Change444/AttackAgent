@@ -137,9 +137,8 @@ FAMILY_PROGRAMS = {
             PrimitiveActionStep("structured-parse", "Detect transform, encoding, or cipher hints", {"required_tags": ["encoding-transform", "observation_gate"]}),
         ],
         PatternNodeKind.ACTION_TEMPLATE: [
-            PrimitiveActionStep("http-request", "Re-fetch target to collect fresh encoding clues and cookies", {"required_tags": ["encoding-transform", "action_template"], "method": "GET"}),
-            PrimitiveActionStep("structured-parse", "Extract encoded fields and transform hints from observations", {"required_tags": ["encoding-transform", "action_template"]}),
             PrimitiveActionStep("code-sandbox", "Run sandboxed decode or transform helpers", {"required_tags": ["encoding-transform", "action_template"]}),
+            PrimitiveActionStep("diff-compare", "Compare decoded forms and consistency signals", {"required_tags": ["encoding-transform", "action_template"]}),
         ],
         PatternNodeKind.VERIFICATION_GATE: [
             PrimitiveActionStep("extract-candidate", "Extract candidate flag from transformed output", {"required_tags": ["encoding-transform", "verification_gate"]}),
@@ -488,24 +487,6 @@ class APGPlanner:
             ]
         )
         memory_hits = self.memory.search(query)
-        # Filter memory hits to only include entries relevant to the current challenge
-        challenge_id = record.snapshot.challenge.id
-        challenge_name = record.snapshot.challenge.name
-        challenge_tokens = set(_tokenize(f"{challenge_id} {challenge_name}"))
-        filtered_hits = []
-        for hit in memory_hits:
-            hit_entry = None
-            for entry in self.memory.entries:
-                if entry.id == hit.episode_id:
-                    hit_entry = entry
-                    break
-            if hit_entry is not None:
-                entry_tokens = set(_tokenize(hit_entry.feature_text))
-                if challenge_tokens & entry_tokens:
-                    filtered_hits.append(hit)
-            else:
-                filtered_hits.append(hit)  # keep hits we can't verify
-        memory_hits = filtered_hits
         family_scores = self._family_scores(record, memory_hits)
         candidates = self._plan_candidates(record, family_scores)
         # Build observation_summaries for ReasoningContext
