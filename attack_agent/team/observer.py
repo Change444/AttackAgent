@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from attack_agent.team.blackboard import BlackboardService
+from attack_agent.team.event_compat import is_genuine_candidate_flag
 from attack_agent.team.protocol import MemoryKind, _gen_id, _utc_now
 from attack_agent.platform_models import EventType
 
@@ -120,7 +121,17 @@ class Observer:
             e.event_type == EventType.OBSERVATION.value for e in recent
         )
         has_new_idea = any(
-            e.event_type == EventType.CANDIDATE_FLAG.value for e in recent
+            e.event_type in (
+                EventType.IDEA_PROPOSED.value,
+                EventType.IDEA_CLAIMED.value,
+                EventType.IDEA_VERIFIED.value,
+                EventType.IDEA_FAILED.value,
+            )
+            or (
+                e.event_type == EventType.CANDIDATE_FLAG.value
+                and is_genuine_candidate_flag(e.event_type, e.payload, e.source)
+            )
+            for e in recent
         )
 
         if not has_new_fact and not has_new_idea:

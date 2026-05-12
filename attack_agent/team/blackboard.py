@@ -233,6 +233,7 @@ class BlackboardService:
             state_facts=state.facts,
             idea_index=idx,
             session_index=sidx,
+            source=ev.source,
         )
         # If caller didn't provide indexes, merge temp indexes into state lists
         if idea_index is None:

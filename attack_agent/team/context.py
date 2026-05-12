@@ -19,7 +19,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from attack_agent.team.blackboard import BlackboardEvent, BlackboardService
+from attack_agent.team.event_compat import is_genuine_candidate_flag
 from attack_agent.team.manager import TeamManager
+from attack_agent.platform_models import EventType
 from attack_agent.team.protocol import (
     FailureBoundary,
     IdeaEntry,
@@ -89,11 +91,17 @@ class ContextCompiler:
 
         ctx.solver_states = state.sessions
 
-        # candidate flags = pending ideas
-        ctx.candidate_flags = [
-            i for i in state.ideas
-            if i.status.value == "pending"
-        ]
+        # candidate flags = genuine extracted flags from candidate_flag events
+        genuine_flag_entries = []
+        for ev in events:
+            if ev.event_type == EventType.CANDIDATE_FLAG.value and is_genuine_candidate_flag(ev.event_type, ev.payload, ev.source):
+                genuine_flag_entries.append(IdeaEntry(
+                    idea_id=ev.event_id,
+                    project_id=project_id,
+                    description=ev.payload.get("flag", ""),
+                    priority=int(ev.payload.get("confidence", 0.5) * 100),
+                ))
+        ctx.candidate_flags = genuine_flag_entries
 
         # stagnation points from manager stagnation computation
         stagnation = self.manager._compute_stagnation(project_id, events)

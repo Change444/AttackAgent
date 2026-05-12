@@ -168,10 +168,10 @@ class TestDetectStagnation(unittest.TestCase):
             self.bb.append_event("p1", EventType.ACTION_OUTCOME.value, {
                 "status": "ok", "solver_id": "s1",
             })
-        self.bb.append_event("p1", EventType.CANDIDATE_FLAG.value, {
+        self.bb.append_event("p1", EventType.IDEA_PROPOSED.value, {
             "flag": "flag{test}", "idea_id": "i1",
             "priority": 100, "status": IdeaStatus.PENDING.value,
-        })
+        }, source="idea_service")
         notes = self.observer.detect_stagnation("p1", cycle_threshold=5)
         self.assertEqual(len(notes), 0)
 

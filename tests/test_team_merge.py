@@ -106,14 +106,14 @@ class TestMergeIdeas(unittest.TestCase):
         self.bb.close()
 
     def test_merge_ideas_duplicate_description(self):
-        self.bb.append_event("p1", EventType.CANDIDATE_FLAG.value, {
+        self.bb.append_event("p1", EventType.IDEA_PROPOSED.value, {
             "flag": "SQL injection on login", "idea_id": "i1",
             "priority": 100, "status": IdeaStatus.PENDING.value, "confidence": 0.5,
-        })
-        self.bb.append_event("p1", EventType.CANDIDATE_FLAG.value, {
+        }, source="idea_service")
+        self.bb.append_event("p1", EventType.IDEA_PROPOSED.value, {
             "flag": "SQL injection on login", "idea_id": "i2",
             "priority": 80, "status": IdeaStatus.PENDING.value, "confidence": 0.4,
-        })
+        }, source="idea_service")
         result = self.hub.merge_ideas("p1")
         self.assertEqual(result.merged_count, 1)
         self.assertEqual(len(result.decisions), 1)
@@ -121,10 +121,10 @@ class TestMergeIdeas(unittest.TestCase):
         self.assertEqual(result.decisions[0].kept_entry_id, "i1")
 
     def test_merge_ideas_no_duplicates(self):
-        self.bb.append_event("p1", EventType.CANDIDATE_FLAG.value, {
+        self.bb.append_event("p1", EventType.IDEA_PROPOSED.value, {
             "flag": "SQL injection", "idea_id": "i1",
             "priority": 100, "status": IdeaStatus.PENDING.value, "confidence": 0.5,
-        })
+        }, source="idea_service")
         result = self.hub.merge_ideas("p1")
         self.assertEqual(result.merged_count, 0)
         self.assertEqual(len(result.decisions), 0)
@@ -185,10 +185,10 @@ class TestArbitrateFlags(unittest.TestCase):
         self.bb.close()
 
     def test_arbitrate_single_flag(self):
-        self.bb.append_event("p1", EventType.CANDIDATE_FLAG.value, {
+        self.bb.append_event("p1", EventType.IDEA_PROPOSED.value, {
             "flag": "flag{test1}", "idea_id": "i1",
             "priority": 100, "status": IdeaStatus.PENDING.value, "confidence": 0.5,
-        })
+        }, source="idea_service")
         result = self.hub.arbitrate_flags("p1")
         self.assertEqual(result.selected_flag, "flag{test1}")
         self.assertEqual(result.selected_idea_id, "i1")
@@ -196,16 +196,16 @@ class TestArbitrateFlags(unittest.TestCase):
 
     def test_arbitrate_consensus_boost(self):
         # same flag from 2 solvers → consensus boost
-        self.bb.append_event("p1", EventType.CANDIDATE_FLAG.value, {
+        self.bb.append_event("p1", EventType.IDEA_PROPOSED.value, {
             "flag": "flag{secret}", "idea_id": "i1",
             "priority": 100, "status": IdeaStatus.PENDING.value, "confidence": 0.5,
             "solver_id": "s1",
-        })
-        self.bb.append_event("p1", EventType.CANDIDATE_FLAG.value, {
+        }, source="idea_service")
+        self.bb.append_event("p1", EventType.IDEA_PROPOSED.value, {
             "flag": "flag{secret}", "idea_id": "i2",
             "priority": 90, "status": IdeaStatus.PENDING.value, "confidence": 0.5,
             "solver_id": "s2",
-        })
+        }, source="idea_service")
         result = self.hub.arbitrate_flags("p1")
         self.assertEqual(result.selected_flag, "flag{secret}")
         self.assertTrue(result.consensus)
@@ -214,22 +214,22 @@ class TestArbitrateFlags(unittest.TestCase):
         self.assertAlmostEqual(result.confidence, 0.6)
 
     def test_arbitrate_different_flags_selects_highest_confidence(self):
-        self.bb.append_event("p1", EventType.CANDIDATE_FLAG.value, {
+        self.bb.append_event("p1", EventType.IDEA_PROPOSED.value, {
             "flag": "flag{a}", "idea_id": "i1",
             "priority": 100, "status": IdeaStatus.PENDING.value, "confidence": 0.5,
             "solver_id": "s1",
-        })
-        self.bb.append_event("p1", EventType.CANDIDATE_FLAG.value, {
+        }, source="idea_service")
+        self.bb.append_event("p1", EventType.IDEA_PROPOSED.value, {
             "flag": "flag{b}", "idea_id": "i2",
             "priority": 80, "status": IdeaStatus.PENDING.value, "confidence": 0.5,
             "solver_id": "s2",
-        })
+        }, source="idea_service")
         # s1 has 2 submissions for flag{a} → consensus boost
-        self.bb.append_event("p1", EventType.CANDIDATE_FLAG.value, {
+        self.bb.append_event("p1", EventType.IDEA_PROPOSED.value, {
             "flag": "flag{a}", "idea_id": "i3",
             "priority": 100, "status": IdeaStatus.PENDING.value, "confidence": 0.5,
             "solver_id": "s3",
-        })
+        }, source="idea_service")
         result = self.hub.arbitrate_flags("p1")
         self.assertEqual(result.selected_flag, "flag{a}")
         self.assertTrue(result.consensus)
@@ -244,14 +244,14 @@ class TestArbitrateFlags(unittest.TestCase):
         self.assertEqual(result.confidence, 0.0)
 
     def test_arbitrate_writes_event(self):
-        self.bb.append_event("p1", EventType.CANDIDATE_FLAG.value, {
+        self.bb.append_event("p1", EventType.IDEA_PROPOSED.value, {
             "flag": "flag{test}", "idea_id": "i1",
             "priority": 100, "status": IdeaStatus.PENDING.value, "confidence": 0.5,
-        })
+        }, source="idea_service")
         self.hub.arbitrate_flags("p1")
         events = self.bb.load_events("p1")
         arb_events = [e for e in events if e.source == "merge_hub"
-                      and e.event_type == EventType.CANDIDATE_FLAG.value]
+                      and e.event_type == EventType.IDEA_PROPOSED.value]
         self.assertEqual(len(arb_events), 1)
         self.assertEqual(arb_events[0].payload["solver_id"], "merged")
         self.assertTrue(arb_events[0].payload.get("arbitration", False))

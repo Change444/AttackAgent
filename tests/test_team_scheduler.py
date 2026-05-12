@@ -94,11 +94,12 @@ class TestSyncSchedulerRunProject(unittest.TestCase):
         bb = _make_bb("run_candidate")
         mgr = TeamManager(ManagerConfig(stagnation_threshold=2))
         sched = SyncScheduler(SchedulerConfig(max_cycles=10))
-        # seed a project with a candidate flag so it converges quickly
+        # seed a genuine candidate flag so it converges quickly
         bb.append_event("p1", "project_upserted",
                         {"challenge_id": "c1", "status": "new"})
         bb.append_event("p1", "candidate_flag",
-                        {"flag": "flag{test}", "confidence": 0.9})
+                        {"flag": "flag{test}", "confidence": 0.9},
+                        source="state_sync")
         bb.append_event("p1", "worker_assigned",
                         {"solver_id": "s1", "profile": "network"})
         result = sched.run_project("p1", mgr, bb)

@@ -29,7 +29,7 @@ Main risk:
 
 ## 3. Phase L0 - Documentation and Protocol Reset
 
-Status: in progress
+Status: complete
 
 Goal: stop future implementation drift by defining the current truth and the next migration boundary.
 
@@ -50,7 +50,7 @@ Acceptance:
 
 ## 4. Phase L1 - Event Semantics Cleanup
 
-Goal: separate ideas, candidate flags, strategy actions, reviews, and knowledge sharing.
+Status: complete
 
 Problem:
 

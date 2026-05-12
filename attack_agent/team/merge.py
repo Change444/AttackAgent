@@ -141,10 +141,10 @@ class MergeHub:
                 reason=f"duplicate idea '{desc}': keep highest priority {best.priority}",
             ))
 
-            # write merged CANDIDATE_FLAG event
+            # write merged IDEA_PROPOSED event
             self._bb.append_event(
                 project_id=project_id,
-                event_type=EventType.CANDIDATE_FLAG.value,
+                event_type=EventType.IDEA_PROPOSED.value,
                 payload={
                     "flag": best.description,
                     "idea_id": best.idea_id,
@@ -263,11 +263,11 @@ class MergeHub:
                     "solver_count": solver_count,
                 })
 
-        # write arbitration result as CANDIDATE_FLAG event
+        # write arbitration result as IDEA_PROPOSED event
         if best_flag:
             self._bb.append_event(
                 project_id=project_id,
-                event_type=EventType.CANDIDATE_FLAG.value,
+                event_type=EventType.IDEA_PROPOSED.value,
                 payload={
                     "flag": best_flag,
                     "idea_id": best_idea_id,

@@ -7,6 +7,7 @@ Both BlackboardService._apply_event and ReplayEngine use this function.
 from __future__ import annotations
 
 from attack_agent.platform_models import EventType
+from attack_agent.team.event_compat import classify_candidate_flag_event
 from attack_agent.team.protocol import (
     IdeaEntry,
     IdeaStatus,
@@ -16,6 +17,37 @@ from attack_agent.team.protocol import (
     SolverStatus,
     TeamProject,
 )
+
+
+_STATUS_MAP = {
+    "idea_proposed": IdeaStatus.PENDING,
+    "idea_claimed": IdeaStatus.CLAIMED,
+    "idea_verified": IdeaStatus.VERIFIED,
+    "idea_failed": IdeaStatus.FAILED,
+}
+
+
+def _apply_idea_event(
+    classified: str,
+    payload: dict,
+    event_id: str,
+    project_id: str,
+    timestamp: str,
+    idea_index: dict[str, IdeaEntry],
+) -> None:
+    """Apply an idea lifecycle event to the idea_index."""
+    idea_id = payload.get("idea_id", event_id)
+    idea_status = _STATUS_MAP.get(classified, IdeaStatus.PENDING)
+    idea = IdeaEntry(
+        idea_id=idea_id,
+        project_id=project_id,
+        description=payload.get("flag", ""),
+        status=idea_status,
+        priority=payload.get("priority", 100),
+        solver_id=payload.get("solver_id", ""),
+        failure_boundary_refs=payload.get("failure_boundary_refs", []),
+    )
+    idea_index[idea_id] = idea
 
 
 def apply_event_to_state(
@@ -28,6 +60,7 @@ def apply_event_to_state(
     state_facts: list[MemoryEntry],
     idea_index: dict[str, IdeaEntry],
     session_index: dict[str, SolverSession],
+    source: str = "system",
 ) -> TeamProject | None:
     """Apply a single event to state components.
 
@@ -70,29 +103,44 @@ def apply_event_to_state(
             )
         )
     elif et == EventType.CANDIDATE_FLAG.value:
-        flag_text = p.get("flag", "")
-        idea_id = p.get("idea_id", event_id)
-        idea_status = IdeaStatus(p.get("status", IdeaStatus.PENDING.value))
-        solver_id = p.get("solver_id", "")
-        idea = IdeaEntry(
-            idea_id=idea_id,
-            project_id=project_id,
-            description=flag_text,
-            status=idea_status,
-            priority=p.get("priority", 100),
-            solver_id=solver_id,
-        )
-        idea_index[idea_id] = idea
-        state_facts.append(
-            MemoryEntry(
-                entry_id=event_id + "_flag",
-                project_id=project_id,
-                kind=MemoryKind.FACT,
-                content=f"candidate flag: {flag_text}",
-                confidence=p.get("confidence", 0.5),
-                created_at=timestamp,
+        classified = classify_candidate_flag_event(p, source)
+        if classified == "candidate_flag":
+            # Genuine extracted flag — store as fact only
+            state_facts.append(
+                MemoryEntry(
+                    entry_id=event_id + "_flag",
+                    project_id=project_id,
+                    kind=MemoryKind.FACT,
+                    content=f"candidate flag: {p.get('flag', '')}",
+                    confidence=p.get("confidence", 0.5),
+                    created_at=timestamp,
+                )
             )
-        )
+        else:
+            # Legacy idea lifecycle event — route to idea handler
+            _apply_idea_event(classified, p, event_id, project_id, timestamp, idea_index)
+    elif et == EventType.IDEA_PROPOSED.value:
+        _apply_idea_event("idea_proposed", p, event_id, project_id, timestamp, idea_index)
+    elif et == EventType.IDEA_CLAIMED.value:
+        _apply_idea_event("idea_claimed", p, event_id, project_id, timestamp, idea_index)
+    elif et == EventType.IDEA_VERIFIED.value:
+        _apply_idea_event("idea_verified", p, event_id, project_id, timestamp, idea_index)
+    elif et == EventType.IDEA_FAILED.value:
+        _apply_idea_event("idea_failed", p, event_id, project_id, timestamp, idea_index)
+        # Also record failure_boundary memory entry for idea_failed (same as
+        # IdeaService.mark_failed does with ACTION_OUTCOME)
+        fb_refs = p.get("failure_boundary_refs", [])
+        if fb_refs:
+            state_facts.append(
+                MemoryEntry(
+                    entry_id=event_id + "_fb",
+                    project_id=project_id,
+                    kind=MemoryKind.FAILURE_BOUNDARY,
+                    content=p.get("flag", ""),
+                    confidence=0.0,
+                    created_at=timestamp,
+                )
+            )
     elif et == EventType.WORKER_ASSIGNED.value:
         solver_id = p.get("solver_id", event_id)
         status_val = p.get("status", SolverStatus.ASSIGNED.value)

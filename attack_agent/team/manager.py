@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from attack_agent.team.blackboard import BlackboardEvent
+from attack_agent.team.event_compat import is_genuine_candidate_flag
 from attack_agent.team.protocol import (
     ActionType,
     StrategyAction,
@@ -251,9 +252,10 @@ class TeamManager:
             p = ev.payload
             et = ev.event_type
 
-            # candidate flags
+            # candidate flags — only genuine extracted flags
             if et == "candidate_flag":
-                candidate_count += 1
+                if is_genuine_candidate_flag(et, p, ev.source):
+                    candidate_count += 1
             # action outcomes
             elif et == "action_outcome":
                 status = p.get("status", "")
@@ -292,15 +294,16 @@ class TeamManager:
     def _extract_candidates(
         self, events: list[BlackboardEvent]
     ) -> list[_CandidateInfo]:
-        """Extract candidate flag info from event journal."""
+        """Extract candidate flag info from event journal — only genuine flags."""
         candidates: list[TeamManager._CandidateInfo] = []
         for ev in events:
             if ev.event_type == "candidate_flag":
-                p = ev.payload
-                candidates.append(
-                    TeamManager._CandidateInfo(
-                        idea_id=ev.event_id,
-                        confidence=p.get("confidence", 0.5),
+                if is_genuine_candidate_flag(ev.event_type, ev.payload, ev.source):
+                    p = ev.payload
+                    candidates.append(
+                        TeamManager._CandidateInfo(
+                            idea_id=ev.event_id,
+                            confidence=p.get("confidence", 0.5),
+                        )
                     )
-                )
         return candidates

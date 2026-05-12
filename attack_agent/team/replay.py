@@ -89,6 +89,7 @@ class ReplayEngine:
                 state_facts=facts,
                 idea_index=idea_index,
                 session_index=session_index,
+                source=ev.source,
             )
             # Build snapshot via blackboard's MaterializedState
             state = blackboard._new_materialized_state()
@@ -126,6 +127,7 @@ class ReplayEngine:
                 state_facts=facts,
                 idea_index=idea_index,
                 session_index=session_index,
+                source=events[i].source,
             )
 
         state = blackboard._new_materialized_state()

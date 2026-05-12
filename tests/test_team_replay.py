@@ -58,16 +58,34 @@ class TestApplyEventPureFunction(unittest.TestCase):
         self.assertEqual(self.facts[0].content, "found endpoint /api")
 
     def test_candidate_flag_creates_idea_and_fact(self):
+        # Legacy candidate_flag with status field — classified as idea event
         self.project = apply_event_to_state(
             project_id="p1", event_type="candidate_flag",
             payload={"flag": "flag{test}", "idea_id": "i1", "status": "pending"},
             timestamp="2026-01-01T00:02:00Z", event_id="e3",
             state_project=self.project, state_facts=self.facts,
             idea_index=self.idea_index, session_index=self.session_index,
+            source="idea_service",
         )
         self.assertIn("i1", self.idea_index)
         self.assertEqual(self.idea_index["i1"].description, "flag{test}")
+        # idea lifecycle events don't create a fact
+        self.assertEqual(len(self.facts), 0)
+
+    def test_genuine_candidate_flag_creates_fact_only(self):
+        # Genuine candidate_flag without status — creates fact, not idea
+        self.project = apply_event_to_state(
+            project_id="p1", event_type="candidate_flag",
+            payload={"flag": "flag{genuine}", "confidence": 0.9},
+            timestamp="2026-01-01T00:02:00Z", event_id="e3",
+            state_project=self.project, state_facts=self.facts,
+            idea_index=self.idea_index, session_index=self.session_index,
+            source="state_sync",
+        )
         self.assertEqual(len(self.facts), 1)
+        self.assertTrue(self.facts[0].content.startswith("candidate flag:"))
+        # no idea created for genuine flag
+        self.assertEqual(len(self.idea_index), 0)
 
     def test_worker_assigned(self):
         self.project = apply_event_to_state(
@@ -135,7 +153,7 @@ class TestReplayEngine(unittest.TestCase):
                              {"kind": "fact", "summary": "found /login", "confidence": 0.8}, "s1")
         self.bb.append_event(project_id, "observation",
                              {"kind": "endpoint", "summary": "endpoint /api", "confidence": 0.7}, "s1")
-        self.bb.append_event(project_id, "candidate_flag",
+        self.bb.append_event(project_id, "idea_proposed",
                              {"flag": "flag{abc}", "idea_id": "i1", "status": "pending"}, "s1")
         self.bb.append_event(project_id, "worker_assigned",
                              {"solver_id": "s1", "status": "assigned", "profile": "network"}, "scheduler")
@@ -160,11 +178,11 @@ class TestReplayEngine(unittest.TestCase):
         self.assertEqual(len(steps[0].state_snapshot.facts), 0)
         # step 2: 2 observations = 2 facts
         self.assertEqual(len(steps[2].state_snapshot.facts), 2)
-        # step 3: candidate flag = 1 idea + 1 more fact (3 total)
+        # step 3: idea proposed = 1 idea, no extra fact (2 facts total)
         self.assertEqual(len(steps[3].state_snapshot.ideas), 1)
-        self.assertEqual(len(steps[3].state_snapshot.facts), 3)
+        self.assertEqual(len(steps[3].state_snapshot.facts), 2)
         # step 5: action outcome ok, no failure boundary
-        self.assertEqual(len(steps[5].state_snapshot.facts), 3)
+        self.assertEqual(len(steps[5].state_snapshot.facts), 2)
         # step 6: submission → project status "solved"
         self.assertEqual(steps[6].state_snapshot.project.status, "solved")
 
@@ -172,7 +190,7 @@ class TestReplayEngine(unittest.TestCase):
         self._seed_project("p1")
         state = self.engine.replay_to_step("p1", 3, self.bb)
         self.assertIsNotNone(state.project)
-        self.assertEqual(len(state.facts), 3)  # 2 observations + 1 candidate flag fact
+        self.assertEqual(len(state.facts), 2)  # 2 observations, idea_proposed doesn't add a fact
         self.assertEqual(len(state.ideas), 1)
 
     def test_replay_to_step_out_of_range(self):
@@ -193,7 +211,7 @@ class TestReplayEngine(unittest.TestCase):
                          {"kind": "fact", "summary": "found /login", "confidence": 0.8}, "s1")
         bb2.append_event("p1", "observation",
                          {"kind": "endpoint", "summary": "endpoint /api", "confidence": 0.7}, "s1")
-        bb2.append_event("p1", "candidate_flag",
+        bb2.append_event("p1", "idea_proposed",
                          {"flag": "flag{abc}", "idea_id": "i1", "status": "pending"}, "s1")
         bb2.append_event("p1", "worker_assigned",
                          {"solver_id": "s1", "status": "assigned", "profile": "network"}, "scheduler")

@@ -60,10 +60,12 @@ class TestManagerContext(unittest.TestCase):
 
     def test_manager_context_candidate_flags(self):
         self.bb.append_event("p1", EventType.PROJECT_UPSERTED.value, {"status": "new"})
+        # genuine candidate_flag creates a flag entry, not an IdeaEntry
         self.bb.append_event("p1", EventType.CANDIDATE_FLAG.value,
-                             {"flag": "flag{test}", "confidence": 0.8})
+                             {"flag": "flag{test}", "confidence": 0.8},
+                             source="state_sync")
         ctx = self.compiler.compile_manager_context("p1", self.bb)
-        # pending ideas = candidate flags
+        # genuine flag appears as candidate flag
         self.assertTrue(len(ctx.candidate_flags) >= 1)
 
     def test_manager_context_stagnation_points(self):
@@ -78,11 +80,14 @@ class TestManagerContext(unittest.TestCase):
         self.bb.append_event("p1", EventType.PROJECT_UPSERTED.value, {"status": "new"})
         self.bb.append_event("p1", EventType.OBSERVATION.value,
                              {"summary": "found endpoint"})
+        # genuine candidate_flag creates a fact, not an idea
         self.bb.append_event("p1", EventType.CANDIDATE_FLAG.value,
-                             {"flag": "flag{x}", "confidence": 0.5})
+                             {"flag": "flag{x}", "confidence": 0.5},
+                             source="state_sync")
         ctx = self.compiler.compile_manager_context("p1", self.bb)
-        self.assertEqual(ctx.resource_status["idea_count"], 1)
+        # genuine flag doesn't create IdeaEntry, so idea_count = 0
         self.assertTrue(ctx.resource_status["fact_count"] >= 1)
+        self.assertEqual(ctx.resource_status["idea_count"], 0)
 
 
 class TestSolverContextPack(unittest.TestCase):

@@ -90,12 +90,35 @@ class TestRebuildState(unittest.TestCase):
         self.svc.append_event("p1", EventType.PROJECT_UPSERTED.value, {"status": "new"})
         self.svc.append_event("p1", EventType.CANDIDATE_FLAG.value, {"flag": "flag{x}", "confidence": 0.9})
         state = self.svc.rebuild_state("p1")
-        self.assertEqual(len(state.ideas), 1)
-        self.assertEqual(state.ideas[0].description, "flag{x}")
-        self.assertEqual(state.ideas[0].status, IdeaStatus.PENDING)
-        # candidate_flag also creates a fact
+        # genuine candidate_flag creates a fact, not an IdeaEntry
+        self.assertEqual(len(state.ideas), 0)
         self.assertEqual(len(state.facts), 1)
         self.assertTrue(state.facts[0].content.startswith("candidate flag:"))
+
+    def test_rebuild_idea_proposed(self):
+        self.svc.append_event("p1", EventType.PROJECT_UPSERTED.value, {"status": "new"})
+        self.svc.append_event("p1", EventType.IDEA_PROPOSED.value,
+                              {"flag": "try SQLi", "idea_id": "i1", "priority": 100,
+                               "confidence": 0.5, "status": "pending"},
+                              source="idea_service")
+        state = self.svc.rebuild_state("p1")
+        # idea_proposed creates IdeaEntry, not a fact
+        self.assertEqual(len(state.ideas), 1)
+        self.assertEqual(state.ideas[0].description, "try SQLi")
+        self.assertEqual(state.ideas[0].status, IdeaStatus.PENDING)
+        self.assertEqual(len(state.facts), 0)
+
+    def test_rebuild_legacy_candidate_flag_as_idea(self):
+        """Legacy candidate_flag with status field is correctly routed as idea event."""
+        self.svc.append_event("p1", EventType.PROJECT_UPSERTED.value, {"status": "new"})
+        self.svc.append_event("p1", EventType.CANDIDATE_FLAG.value,
+                              {"flag": "old idea", "idea_id": "i1", "status": "pending",
+                               "confidence": 0.5, "priority": 100},
+                              source="idea_service")
+        state = self.svc.rebuild_state("p1")
+        # legacy idea lifecycle event routed correctly — idea, not fact
+        self.assertEqual(len(state.ideas), 1)
+        self.assertEqual(state.ideas[0].description, "old idea")
 
     def test_rebuild_worker_assigned(self):
         self.svc.append_event("p1", EventType.PROJECT_UPSERTED.value, {"status": "new"})

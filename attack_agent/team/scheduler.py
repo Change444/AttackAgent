@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from attack_agent.platform_models import EventType
 from attack_agent.team.blackboard import BlackboardService
+from attack_agent.team.event_compat import is_genuine_candidate_flag
 from attack_agent.team.manager import ManagerConfig, TeamManager
 from attack_agent.team.protocol import (
     ActionType,
@@ -212,7 +213,12 @@ def _infer_stage(events: list, project_status: str) -> str:
         if et in (EventType.OBSERVATION.value, EventType.ACTION_OUTCOME.value):
             has_explore = True
         if et == EventType.CANDIDATE_FLAG.value:
-            has_convergence_events = True
+            # Only genuine flags count as convergence events
+            if is_genuine_candidate_flag(et, ev.payload, ev.source):
+                has_convergence_events = True
+        elif et == EventType.STRATEGY_ACTION.value:
+            if ev.payload.get("action_type") == "converge":
+                has_convergence_events = True
         if et == EventType.PROJECT_ABANDONED.value:
             return "abandoned"
         if et == EventType.PROJECT_DONE.value:
@@ -247,7 +253,7 @@ def _action_to_event_type(action_type: ActionType) -> str:
         ActionType.LAUNCH_SOLVER: EventType.WORKER_ASSIGNED.value,
         ActionType.STEER_SOLVER: EventType.REQUEUE.value,
         ActionType.SUBMIT_FLAG: EventType.SUBMISSION.value,
-        ActionType.CONVERGE: EventType.REQUEUE.value,
+        ActionType.CONVERGE: EventType.STRATEGY_ACTION.value,
         ActionType.ABANDON: EventType.PROJECT_ABANDONED.value,
         ActionType.STOP_SOLVER: EventType.WORKER_TIMEOUT.value,
     }

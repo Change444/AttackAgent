@@ -8,10 +8,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from attack_agent.platform_models import EventType
 from attack_agent.team.benchmark import BenchmarkRunner, RegressionReport, RunMetrics, MetricsComparison
 from attack_agent.team.blackboard import BlackboardService, MaterializedState
 from attack_agent.team.blackboard_config import BlackboardConfig
 from attack_agent.team.context import ContextCompiler
+from attack_agent.team.event_compat import is_genuine_candidate_flag
 from attack_agent.team.ideas import IdeaService
 from attack_agent.team.manager import ManagerConfig, TeamManager
 from attack_agent.team.memory import MemoryService
@@ -474,10 +476,13 @@ class TeamRuntime:
         pending_reviews = self.review_gate.list_pending_reviews(
             project_id, self.blackboard
         )
+        # Derive candidate flags from genuine candidate_flag events
+        raw_events = self.blackboard.load_events(project_id)
         candidate_flags = [
-            i.description
-            for i in ideas
-            if i.status == IdeaStatus.PENDING and "flag" in i.description.lower()
+            ev.payload.get("flag", "")
+            for ev in raw_events
+            if ev.event_type == EventType.CANDIDATE_FLAG.value
+            and is_genuine_candidate_flag(ev.event_type, ev.payload, ev.source)
         ]
 
         # get last observation severity from checkpoint events

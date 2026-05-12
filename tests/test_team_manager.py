@@ -52,8 +52,10 @@ class TestTeamManagerStageTransition(unittest.TestCase):
         self.assertEqual(action.action_type, ActionType.STEER_SOLVER)
 
     def test_explore_to_converge_with_candidates(self):
+        # genuine candidate_flag (no status field) triggers convergence
         self.bb.append_event("p1", "candidate_flag",
-                             {"flag": "flag{test}", "confidence": 0.8})
+                             {"flag": "flag{test}", "confidence": 0.8},
+                             source="state_sync")
         events = self.bb.load_events("p1")
         action = self.mgr.decide_stage_transition("p1", "explore", events)
         self.assertEqual(action.action_type, ActionType.CONVERGE)
@@ -108,7 +110,8 @@ class TestTeamManagerDecideSubmit(unittest.TestCase):
 
     def test_submit_flag_when_confidence_high(self):
         self.bb.append_event("p1", "candidate_flag",
-                             {"flag": "flag{high}", "confidence": 0.9})
+                             {"flag": "flag{high}", "confidence": 0.9},
+                             source="state_sync")
         events = self.bb.load_events("p1")
         action = self.mgr.decide_submit("p1", events)
         self.assertEqual(action.action_type, ActionType.SUBMIT_FLAG)
@@ -116,7 +119,8 @@ class TestTeamManagerDecideSubmit(unittest.TestCase):
 
     def test_converge_when_confidence_low(self):
         self.bb.append_event("p1", "candidate_flag",
-                             {"flag": "flag{low}", "confidence": 0.3})
+                             {"flag": "flag{low}", "confidence": 0.3},
+                             source="state_sync")
         events = self.bb.load_events("p1")
         action = self.mgr.decide_submit("p1", events)
         self.assertEqual(action.action_type, ActionType.CONVERGE)
@@ -127,9 +131,11 @@ class TestTeamManagerDecideSubmit(unittest.TestCase):
 
     def test_submit_best_candidate(self):
         self.bb.append_event("p1", "candidate_flag",
-                             {"flag": "flag{low}", "confidence": 0.2})
+                             {"flag": "flag{low}", "confidence": 0.2},
+                             source="state_sync")
         self.bb.append_event("p1", "candidate_flag",
-                             {"flag": "flag{best}", "confidence": 0.95})
+                             {"flag": "flag{best}", "confidence": 0.95},
+                             source="state_sync")
         events = self.bb.load_events("p1")
         action = self.mgr.decide_submit("p1", events)
         self.assertEqual(action.action_type, ActionType.SUBMIT_FLAG)
@@ -195,7 +201,8 @@ class TestTeamManagerDecideConvergence(unittest.TestCase):
 
     def test_converge_with_candidates(self):
         self.bb.append_event("p1", "candidate_flag",
-                             {"flag": "flag{test}", "confidence": 0.8})
+                             {"flag": "flag{test}", "confidence": 0.8},
+                             source="state_sync")
         events = self.bb.load_events("p1")
         action = self.mgr.decide_convergence("p1", events)
         self.assertEqual(action.action_type, ActionType.CONVERGE)

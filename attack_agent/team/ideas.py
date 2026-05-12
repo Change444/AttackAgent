@@ -34,7 +34,7 @@ class IdeaService:
         )
         self.blackboard.append_event(
             project_id,
-            EventType.CANDIDATE_FLAG.value,
+            EventType.IDEA_PROPOSED.value,
             {
                 "flag": description,
                 "idea_id": idea.idea_id,
@@ -51,7 +51,7 @@ class IdeaService:
     ) -> IdeaEntry | None:
         """Mark an idea as claimed by a solver.
 
-        Writes a worker_assigned event to record the claim.
+        Writes an idea_claimed event to record the claim.
         Returns the updated IdeaEntry, or None if idea not found.
         """
         ideas = self.blackboard.list_ideas(project_id)
@@ -71,7 +71,7 @@ class IdeaService:
         target.solver_id = solver_id
         self.blackboard.append_event(
             project_id,
-            EventType.CANDIDATE_FLAG.value,
+            EventType.IDEA_CLAIMED.value,
             {
                 "flag": target.description,
                 "idea_id": target.idea_id,
@@ -100,7 +100,7 @@ class IdeaService:
         target.status = IdeaStatus.VERIFIED
         self.blackboard.append_event(
             project_id,
-            EventType.CANDIDATE_FLAG.value,
+            EventType.IDEA_VERIFIED.value,
             {
                 "flag": target.description,
                 "idea_id": target.idea_id,
@@ -132,7 +132,7 @@ class IdeaService:
         target.failure_boundary_refs = failure_boundary_ids
         self.blackboard.append_event(
             project_id,
-            EventType.CANDIDATE_FLAG.value,
+            EventType.IDEA_FAILED.value,
             {
                 "flag": target.description,
                 "idea_id": target.idea_id,
