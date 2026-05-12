@@ -1070,7 +1070,8 @@ def _execute_session_materialize(step: PrimitiveActionStep, bundle: TaskBundle, 
     for index, spec in enumerate(session_config):
         login_url = str(spec.get("login_url", bundle.target))
         method = str(spec.get("method", "POST")).upper()
-        form_fields = dict(spec.get("form_fields", {}))
+        form_fields_raw = spec.get("form_fields", {})
+        form_fields = dict(form_fields_raw) if isinstance(form_fields_raw, dict) else {}
         username = str(spec.get("username", ""))
         password = str(spec.get("password", ""))
         if username and password:
@@ -1652,6 +1653,7 @@ def _execute_code_sandbox(step: PrimitiveActionStep, bundle: TaskBundle, sandbox
 def _extract_candidates(step: PrimitiveActionStep, bundle: TaskBundle) -> ActionOutcome:
     texts: list[str] = []
     candidate_flags: list[CandidateFlag] = []
+    seen_keys: set[str] = set()
     for obs in bundle.completed_observations.values():
         obs_text = obs.payload.get("text", "")
         if obs_text:
@@ -1668,8 +1670,9 @@ def _extract_candidates(step: PrimitiveActionStep, bundle: TaskBundle) -> Action
     for pattern in patterns:
         for text in texts:
             for match in pattern.findall(text):
-                if match in bundle.known_candidate_keys:
+                if match in bundle.known_candidate_keys or match in seen_keys:
                     continue
+                seen_keys.add(match)
                 candidate_flags.append(
                     CandidateFlag(
                         value=match,
@@ -1739,6 +1742,57 @@ class WorkspaceManager:
         return {"run_id": bundle.run_id, "program_id": bundle.action_program.id, "target": bundle.target}
 
 
+def _inject_step_parameters(step: PrimitiveActionStep, bundle: TaskBundle) -> PrimitiveActionStep:
+    """Auto-fill missing step parameters from bundle context before execution."""
+    params = dict(step.parameters) if step.parameters else {}
+    completed = list(bundle.completed_observations.values())
+    target = bundle.target
+
+    if step.primitive == "structured-parse":
+        if "parse_source" not in params and completed:
+            params["parse_source"] = completed[-1].id
+        if "format" not in params:
+            params["format"] = "json"
+
+    elif step.primitive == "diff-compare":
+        if "baseline_observation_id" not in params and len(completed) >= 2:
+            params["baseline_observation_id"] = completed[-2].id
+            params["variant_observation_id"] = completed[-1].id
+
+    elif step.primitive == "binary-inspect":
+        if "url" not in params and "location" not in params and "path" not in params and target:
+            params["url"] = target
+
+    elif step.primitive == "code-sandbox":
+        if "program_fragment" not in params and completed:
+            # Heuristic: check if observations contain encoded/transform clues
+            for obs in completed:
+                text = obs.payload.get("text", "")
+                if "base64" in text.lower() or "encoded" in text.lower() or "secret" in text.lower():
+                    cookies = obs.payload.get("cookies", {})
+                    if isinstance(cookies, dict):
+                        for k, v in cookies.items():
+                            if isinstance(v, str) and len(v) > 10:
+                                params["program_fragment"] = (
+                                    f"import base64\n"
+                                    f"decoded = base64.b64decode('{v}').decode('utf-8', errors='ignore')\n"
+                                    f"print(decoded)"
+                                )
+                                params["inputs"] = {}
+                                break
+                    break
+
+    elif step.primitive == "http-request":
+        if "url" not in params and "path" not in params and target:
+            params["url"] = target
+        if "method" not in params:
+            params["method"] = "GET"
+
+    if params == step.parameters:
+        return step
+    return PrimitiveActionStep(primitive=step.primitive, instruction=step.instruction, parameters=params)
+
+
 class WorkerRuntime:
     def __init__(self, browser_config: Any | None = None, http_config: Any | None = None) -> None:
         self.registry = PrimitiveRegistry()
@@ -1774,13 +1828,16 @@ class WorkerRuntime:
                 # Restore auth headers
                 for name, value in session_state.auth_headers.items():
                     session_manager.add_auth_header(name, value)
-        aggregate = ActionOutcome(status="failed", failure_reason="no_steps")
+        aggregate = ActionOutcome(status="failed", failure_reason=None)
+        steps_executed = 0
         events: list[Event] = []
         try:
             for step in task_bundle.action_program.steps:
                 if step.primitive not in task_bundle.visible_primitives:
                     continue
-                outcome = self.registry.adapters[step.primitive].execute(step, task_bundle, self.sandbox, session_manager, browser_inspector, http_client)
+                enriched_step = _inject_step_parameters(step, task_bundle)
+                steps_executed += 1
+                outcome = self.registry.adapters[enriched_step.primitive].execute(enriched_step, task_bundle, self.sandbox, session_manager, browser_inspector, http_client)
                 aggregate.observations.extend(outcome.observations)
                 aggregate.artifacts.extend(outcome.artifacts)
                 aggregate.derived_hypotheses.extend(outcome.derived_hypotheses)
@@ -1797,6 +1854,8 @@ class WorkerRuntime:
         finally:
             browser_inspector.close()
             http_client.close()
+        if steps_executed == 0 and aggregate.failure_reason is None:
+            aggregate.failure_reason = "no_steps"
         for observation in aggregate.observations:
             events.append(
                 Event(
@@ -1853,7 +1912,11 @@ class WorkerRuntime:
                     source="runtime",
                 )
             )
+        seen_dedupe_keys: set[str] = set()
         for candidate in aggregate.candidate_flags:
+            if candidate.dedupe_key in seen_dedupe_keys:
+                continue
+            seen_dedupe_keys.add(candidate.dedupe_key)
             events.append(
                 Event(
                     type=EventType.CANDIDATE_FLAG,

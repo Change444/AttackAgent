@@ -176,6 +176,8 @@ class ConstraintContextBuilder:
         )
 
 
+MAX_FREE_EXPLORATION_STEPS = 6
+
 class ConstraintAwareReasoner:
     """约束感知推理器：在约束条件下生成自由计划"""
 
@@ -245,7 +247,11 @@ class ConstraintAwareReasoner:
         if record.artifacts:
             parts.append(f"已有证据: {len(record.artifacts)} 个")
         if record.candidate_flags:
-            parts.append(f"已有候选flag: {len(record.candidate_flags)} 个")
+            high_conf = [c for c in record.candidate_flags.values() if c.confidence >= 0.9 and c.format_match]
+            if high_conf:
+                parts.append(f"已有高置信度候选flag: {[c.value for c in high_conf]} — 优先提交而非继续探索")
+            else:
+                parts.append(f"已有候选flag: {len(record.candidate_flags)} 个")
         return "\n".join(parts)
 
     def _parse_plan_response(self, response: dict[str, Any], context: PlanningContext) -> ActionProgram | None:
@@ -285,6 +291,9 @@ class ConstraintAwareReasoner:
 
         if not steps:
             return None
+
+        # Truncate free exploration plans to prevent excessive cost
+        steps = steps[:MAX_FREE_EXPLORATION_STEPS]
 
         challenge = context.record.snapshot.challenge
         return ActionProgram(
