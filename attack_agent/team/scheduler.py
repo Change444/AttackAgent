@@ -23,6 +23,8 @@ from attack_agent.team.protocol import (
 )
 
 if TYPE_CHECKING:
+    from attack_agent.team.context import ContextCompiler
+    from attack_agent.team.policy import PolicyHarness
     from attack_agent.team.runtime import TeamRuntime
 
 
@@ -44,6 +46,8 @@ class SyncScheduler:
         manager: TeamManager,
         blackboard: BlackboardService,
         runtime: TeamRuntime | None = None,
+        context_compiler: ContextCompiler | None = None,
+        policy_harness: PolicyHarness | None = None,
     ) -> list[StrategyAction]:
         """One scheduling cycle for a project.
 
@@ -70,11 +74,32 @@ class SyncScheduler:
 
         current_stage = _infer_stage(events, project.status)
 
-        action = manager.decide_stage_transition(
-            project_id, current_stage, events
-        )
+        # -- L2: compile ManagerContext when compiler available --
+        ctx = None
+        if context_compiler is not None:
+            ctx = context_compiler.compile_manager_context(project_id, blackboard)
+
+        # -- L2: use context-aware method when context available --
+        if ctx is not None:
+            action = manager.decide_stage_transition_from_context(
+                project_id, current_stage, ctx
+            )
+        else:
+            action = manager.decide_stage_transition(
+                project_id, current_stage, events
+            )
+
         if action is None:
             return []
+
+        # -- L2: soft policy gate --
+        if policy_harness is not None:
+            policy_result = policy_harness.validate_action(action, project_id, blackboard)
+            if policy_result.decision.value == "budget_exceeded":
+                return []
+            if policy_result.decision.value == "needs_review":
+                action.requires_review = True
+                action.policy_tags = action.policy_tags + ["needs_review"]
 
         _record_action(blackboard, action)
 
@@ -96,13 +121,26 @@ class SyncScheduler:
                 events = blackboard.load_events(project_id)
                 state = blackboard.rebuild_state(project_id)
                 if state.project is not None and state.project.status not in ("done", "abandoned"):
-                    follow_up = manager.decide_stage_transition(
-                        project_id, _infer_stage(events, state.project.status), events
-                    )
+                    # -- L2: compile context for follow-up if available --
+                    follow_up_ctx = None
+                    if context_compiler is not None:
+                        follow_up_ctx = context_compiler.compile_manager_context(project_id, blackboard)
+
+                    if follow_up_ctx is not None:
+                        follow_up = manager.decide_stage_transition_from_context(
+                            project_id, _infer_stage(events, state.project.status), follow_up_ctx
+                        )
+                    else:
+                        follow_up = manager.decide_stage_transition(
+                            project_id, _infer_stage(events, state.project.status), events
+                        )
                     if follow_up is not None:
                         _record_action(blackboard, follow_up)
                         if follow_up.action_type == ActionType.CONVERGE:
-                            submit_action = manager.decide_submit(project_id, events)
+                            if follow_up_ctx is not None:
+                                submit_action = manager.decide_submit_from_context(follow_up_ctx)
+                            else:
+                                submit_action = manager.decide_submit(project_id, events)
                             _record_action(blackboard, submit_action)
                             _execute_submit_if_possible(runtime, project_id, submit_action, blackboard)
                             return [action, follow_up, submit_action]
@@ -111,7 +149,10 @@ class SyncScheduler:
 
         # for converge stage, also check submit
         if action.action_type == ActionType.CONVERGE:
-            submit_action = manager.decide_submit(project_id, events)
+            if ctx is not None:
+                submit_action = manager.decide_submit_from_context(ctx)
+            else:
+                submit_action = manager.decide_submit(project_id, events)
             _record_action(blackboard, submit_action)
             _execute_submit_if_possible(runtime, project_id, submit_action, blackboard)
             return [action, submit_action]
@@ -124,6 +165,8 @@ class SyncScheduler:
         manager: TeamManager,
         blackboard: BlackboardService,
         runtime: TeamRuntime | None = None,
+        context_compiler: ContextCompiler | None = None,
+        policy_harness: PolicyHarness | None = None,
     ) -> TeamProject:
         """Run a project until done / abandoned.
 
@@ -148,7 +191,10 @@ class SyncScheduler:
             if state.project is not None and state.project.status in ("done", "abandoned"):
                 return state.project
 
-            self.schedule_cycle(project_id, manager, blackboard, runtime)
+            self.schedule_cycle(
+                project_id, manager, blackboard, runtime,
+                context_compiler, policy_harness,
+            )
 
         # max cycles reached — mark abandoned if not done
         state = blackboard.rebuild_state(project_id)
@@ -172,11 +218,16 @@ class SyncScheduler:
         blackboard: BlackboardService,
         project_ids: list[str],
         runtime: TeamRuntime | None = None,
+        context_compiler: ContextCompiler | None = None,
+        policy_harness: PolicyHarness | None = None,
     ) -> dict[str, TeamProject]:
         """Run all projects sequentially (concurrency=1)."""
         results: dict[str, TeamProject] = {}
         for pid in project_ids:
-            results[pid] = self.run_project(pid, manager, blackboard, runtime)
+            results[pid] = self.run_project(
+                pid, manager, blackboard, runtime,
+                context_compiler, policy_harness,
+            )
         return results
 
 

@@ -13,6 +13,7 @@ Decision thresholds are ported from Dispatcher defaults:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from attack_agent.team.blackboard import BlackboardEvent
 from attack_agent.team.event_compat import is_genuine_candidate_flag
@@ -21,6 +22,9 @@ from attack_agent.team.protocol import (
     StrategyAction,
     TeamProject,
 )
+
+if TYPE_CHECKING:
+    from attack_agent.team.context import ManagerContext
 
 
 @dataclass
@@ -111,6 +115,190 @@ class TeamManager:
             project_id=project_id,
             reason=f"assign solver: profile={profile}",
             risk_level="low",
+        )
+
+    # -- L2: context-aware decisions --
+
+    def decide_stage_transition_from_context(
+        self,
+        project_id: str,
+        current_stage: str,
+        ctx: ManagerContext,
+    ) -> StrategyAction | None:
+        """Decide next stage using compiled ManagerContext.
+
+        Context-aware version of decide_stage_transition. The original
+        method remains for backward compatibility with existing tests.
+        """
+        # -- L2 acceptance: resource exhaustion changes behavior --
+        if ctx.budget_remaining <= 0 and len(ctx.solver_states) > 0:
+            # budget exhausted with existing solver → reuse instead of launch
+            solver_id = ctx.solver_states[0].solver_id
+            if current_stage in ("bootstrap", "reason"):
+                return StrategyAction(
+                    action_type=ActionType.STEER_SOLVER,
+                    project_id=project_id,
+                    target_solver_id=solver_id,
+                    reason="budget exhausted, reuse existing solver",
+                    risk_level="medium",
+                    budget_request=0.0,
+                    policy_tags=["budget_constrained"],
+                )
+
+        if current_stage == "bootstrap":
+            return StrategyAction(
+                action_type=ActionType.LAUNCH_SOLVER,
+                project_id=project_id,
+                reason="bootstrap → reason: assign solver profile",
+            )
+        if current_stage == "reason":
+            return StrategyAction(
+                action_type=ActionType.STEER_SOLVER,
+                project_id=project_id,
+                reason="reason → explore: pattern graph ready",
+            )
+
+        # explore stage — context-aware decisions
+
+        # -- L2 acceptance: pending review blocks execution --
+        if ctx.pending_reviews:
+            blocking_action_types = set()
+            for rv in ctx.pending_reviews:
+                at = rv.get("action_type", "")
+                if at in ("steer_solver", "launch_solver"):
+                    blocking_action_types.add(at)
+            if blocking_action_types:
+                return StrategyAction(
+                    action_type=ActionType.CONVERGE,
+                    project_id=project_id,
+                    reason=f"pending review blocks execution: "
+                            f"blocked actions={blocking_action_types}",
+                    policy_tags=["review_blocked"],
+                )
+
+        # -- stagnation check (same logic as _compute_stagnation, but from ctx) --
+        should_abandon = False
+        if ctx.stagnation_points:
+            for sp in ctx.stagnation_points:
+                if sp.startswith("stagnation_counter="):
+                    count = int(sp.split("=")[1])
+                    if count >= self.config.stagnation_threshold:
+                        should_abandon = True
+                if sp == "low_novelty" and "dead_ends=" in " ".join(ctx.stagnation_points):
+                    should_abandon = True
+
+        # candidate flags suppress abandon
+        if ctx.candidate_flags:
+            should_abandon = False
+
+        if should_abandon:
+            return StrategyAction(
+                action_type=ActionType.ABANDON,
+                project_id=project_id,
+                reason=f"abandon: {', '.join(ctx.stagnation_points)}",
+                evidence_refs=[fb.boundary_id for fb in ctx.failure_boundaries],
+            )
+
+        if ctx.candidate_flags:
+            return StrategyAction(
+                action_type=ActionType.CONVERGE,
+                project_id=project_id,
+                reason=f"converge: {len(ctx.candidate_flags)} candidate flags",
+                target_idea_id=ctx.candidate_flags[0].idea_id,
+            )
+
+        # -- L2 acceptance: failure boundary changes STEER_SOLVER --
+        action = StrategyAction(
+            action_type=ActionType.STEER_SOLVER,
+            project_id=project_id,
+            reason="continue explore",
+        )
+        if ctx.failure_boundaries:
+            action.risk_level = "medium"
+            action.reason = (
+                f"steer: explore with {len(ctx.failure_boundaries)} active boundaries"
+            )
+            action.evidence_refs = [fb.boundary_id for fb in ctx.failure_boundaries]
+            if ctx.solver_states:
+                action.target_solver_id = ctx.solver_states[0].solver_id
+            action.policy_tags = ["boundary_aware"]
+        elif ctx.solver_states:
+            action.target_solver_id = ctx.solver_states[0].solver_id
+
+        return action
+
+    def decide_submit_from_context(
+        self, ctx: ManagerContext
+    ) -> StrategyAction:
+        """Decide whether to submit a candidate flag, using compiled context.
+
+        -- L2 acceptance: high-confidence flag produces submit intent
+           only when verification data exists.
+        """
+        project_id = ctx.project_state.project_id if ctx.project_state else ""
+
+        if not ctx.candidate_flags:
+            return StrategyAction(
+                action_type=ActionType.ABANDON,
+                project_id=project_id,
+                reason="no candidate flags to submit",
+            )
+
+        # find best candidate by priority (priority = confidence * 100)
+        best = max(ctx.candidate_flags, key=lambda c: c.priority)
+        best_confidence = best.priority / 100.0
+
+        # -- L2 acceptance: verification gate --
+        if best_confidence >= self.config.confidence_threshold:
+            verified = ctx.verification_state.get(best.idea_id)
+            if verified == "pass":
+                return StrategyAction(
+                    action_type=ActionType.SUBMIT_FLAG,
+                    project_id=project_id,
+                    target_idea_id=best.idea_id,
+                    reason=f"submit: confidence={best_confidence:.2f} verified",
+                    risk_level="high",
+                    requires_review=True,
+                    evidence_refs=[best.idea_id],
+                    policy_tags=["verified_submit"],
+                )
+            else:
+                return StrategyAction(
+                    action_type=ActionType.CONVERGE,
+                    project_id=project_id,
+                    target_idea_id=best.idea_id,
+                    reason=f"waiting for verification: confidence={best_confidence:.2f} "
+                            f"but verification={verified or 'none'}",
+                    policy_tags=["awaiting_verification"],
+                )
+
+        return StrategyAction(
+            action_type=ActionType.CONVERGE,
+            project_id=project_id,
+            reason=f"wait: best confidence={best_confidence:.2f} < "
+                   f"{self.config.confidence_threshold:.2f}",
+        )
+
+    def decide_convergence_from_context(
+        self, project_id: str, ctx: ManagerContext
+    ) -> StrategyAction:
+        """Decide convergence using compiled context."""
+        if ctx.stagnation_points and not ctx.candidate_flags:
+            return StrategyAction(
+                action_type=ActionType.ABANDON,
+                project_id=project_id,
+                reason=f"abandon: {', '.join(ctx.stagnation_points)}",
+            )
+        if ctx.candidate_flags:
+            return StrategyAction(
+                action_type=ActionType.CONVERGE,
+                project_id=project_id,
+                reason=f"converge: {len(ctx.candidate_flags)} candidate flags",
+            )
+        return StrategyAction(
+            action_type=ActionType.STEER_SOLVER,
+            project_id=project_id,
+            reason="keep exploring",
         )
 
     # -- heartbeat --

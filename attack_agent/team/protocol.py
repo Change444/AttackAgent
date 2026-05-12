@@ -184,6 +184,7 @@ class StrategyAction:
     reason: str = ""
     evidence_refs: list[str] = field(default_factory=list)
     requires_review: bool = False
+    policy_tags: list[str] = field(default_factory=list)
 
 
 @dataclass

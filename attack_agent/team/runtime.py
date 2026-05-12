@@ -124,9 +124,9 @@ class TeamRuntime:
 
         self.memory = MemoryService(self.blackboard)
         self.ideas = IdeaService(self.blackboard)
-        self.context = ContextCompiler(self.memory, self.ideas, self.manager)
-        self.policy = PolicyHarness()
         self.review_gate = HumanReviewGate()
+        self.context = ContextCompiler(self.memory, self.ideas, self.manager, self.review_gate)
+        self.policy = PolicyHarness()
         self.merge = MergeHub(self.blackboard)
         self.verifier = SubmissionVerifier(self.blackboard)
         self.observer = Observer(self.blackboard)
@@ -156,7 +156,8 @@ class TeamRuntime:
             source="team_runtime",
         )
         return self.scheduler.run_project(
-            project.project_id, self.manager, self.blackboard, self
+            project.project_id, self.manager, self.blackboard, self,
+            self.context, self.policy,
         )
 
     def run_all(self, challenge_ids: list[str]) -> dict[str, TeamProject]:
@@ -211,7 +212,7 @@ class TeamRuntime:
                 )
 
         # 3. Run all projects via SyncScheduler
-        results = self.scheduler.run_all(self.manager, self.blackboard, project_ids, self)
+        results = self.scheduler.run_all(self.manager, self.blackboard, project_ids, self, self.context, self.policy)
 
         # 4. Sync StateGraphService → Blackboard final state first (Phase K-3)
         for pid in project_ids:

@@ -11,12 +11,14 @@ from attack_agent.team.context import ContextCompiler, ManagerContext, SolverCon
 from attack_agent.team.ideas import IdeaService
 from attack_agent.team.memory import MemoryService
 from attack_agent.team.manager import ManagerConfig, TeamManager
+from attack_agent.team.review import HumanReviewGate
 from attack_agent.team.protocol import (
     FailureBoundary,
     IdeaEntry,
     IdeaStatus,
     MemoryEntry,
     MemoryKind,
+    ReviewRequest,
     SolverSession,
     TeamProject,
 )
@@ -207,6 +209,14 @@ class TestContextPackGolden(unittest.TestCase):
         self.assertIsInstance(ctx.stagnation_points, list)
         self.assertIsInstance(ctx.resource_status, dict)
         self.assertIsInstance(ctx.pending_reviews, list)
+        # L2 fields
+        self.assertIsInstance(ctx.active_ideas, list)
+        self.assertIsInstance(ctx.failure_boundaries, list)
+        self.assertIsInstance(ctx.verification_state, dict)
+        self.assertIsInstance(ctx.recent_human_decisions, list)
+        self.assertIsInstance(ctx.observer_reports, list)
+        self.assertIsInstance(ctx.high_value_facts, list)
+        self.assertIsInstance(ctx.high_value_credentials, list)
         # resource_status has expected keys
         self.assertIn("idea_count", ctx.resource_status)
         self.assertIn("fact_count", ctx.resource_status)
@@ -223,6 +233,130 @@ class TestContextPackGolden(unittest.TestCase):
         self.assertIsInstance(ctx.inbox, list)
         self.assertEqual(ctx.solver_id, "s1")
         self.assertEqual(ctx.project_id, "p1")
+
+
+class TestL2ManagerContextExpansion(unittest.TestCase):
+    """L2: verify new ManagerContext fields are populated correctly."""
+
+    def setUp(self):
+        self.bb = _make_bb("l2_ctx")
+        self.mem_svc = MemoryService(self.bb)
+        self.idea_svc = IdeaService(self.bb)
+        self.review_gate = HumanReviewGate()
+        self.compiler = ContextCompiler(
+            memory_service=self.mem_svc,
+            idea_service=self.idea_svc,
+            review_gate=self.review_gate,
+        )
+        self.bb.append_event("p1", EventType.PROJECT_UPSERTED.value, {"status": "new"})
+
+    def tearDown(self):
+        self.bb.close()
+
+    def test_compile_populates_pending_reviews(self):
+        req = ReviewRequest(
+            project_id="p1",
+            action_type="steer_solver",
+            risk_level="high",
+            title="review steer",
+            proposed_action="steer_solver",
+        )
+        self.review_gate.create_review(req, self.bb)
+        ctx = self.compiler.compile_manager_context("p1", self.bb)
+        self.assertTrue(len(ctx.pending_reviews) >= 1)
+        self.assertEqual(ctx.pending_reviews[0]["action_type"], "steer_solver")
+
+    def test_compile_populates_failure_boundaries(self):
+        self.mem_svc.store_entry("p1", MemoryEntry(
+            kind=MemoryKind.FAILURE_BOUNDARY,
+            content="WAF blocked",
+            confidence=0.0,
+        ))
+        ctx = self.compiler.compile_manager_context("p1", self.bb)
+        self.assertTrue(len(ctx.failure_boundaries) >= 1)
+        self.assertEqual(ctx.failure_boundaries[0].description, "WAF blocked")
+
+    def test_compile_populates_active_ideas(self):
+        self.idea_svc.propose("p1", "try XSS", priority=80)
+        ctx = self.compiler.compile_manager_context("p1", self.bb)
+        self.assertTrue(len(ctx.active_ideas) >= 1)
+
+    def test_compile_populates_verification_state(self):
+        self.bb.append_event("p1", EventType.CANDIDATE_FLAG.value,
+                             {"flag": "flag{test}", "confidence": 0.9},
+                             source="state_sync")
+        self.bb.append_event("p1", EventType.SECURITY_VALIDATION.value,
+                             {"check": "evidence_chain", "outcome": "pass",
+                              "candidate_flag_id": "cf_1"},
+                             source="submission_verifier")
+        ctx = self.compiler.compile_manager_context("p1", self.bb)
+        self.assertEqual(ctx.verification_state.get("cf_1"), "pass")
+
+    def test_compile_populates_budget_remaining(self):
+        self.bb.append_event("p1", EventType.WORKER_ASSIGNED.value,
+                             {"solver_id": "s1", "profile": "network", "budget_remaining": 15.0})
+        ctx = self.compiler.compile_manager_context("p1", self.bb)
+        self.assertEqual(ctx.budget_remaining, 15.0)
+
+    def test_compile_populates_high_value_facts(self):
+        self.mem_svc.store_entry("p1", MemoryEntry(
+            kind=MemoryKind.FACT, content="found admin page", confidence=0.85))
+        ctx = self.compiler.compile_manager_context("p1", self.bb)
+        self.assertTrue(len(ctx.high_value_facts) >= 1)
+
+    def test_compile_populates_high_value_credentials(self):
+        self.mem_svc.store_entry("p1", MemoryEntry(
+            kind=MemoryKind.CREDENTIAL, content="admin:pass", confidence=0.9))
+        ctx = self.compiler.compile_manager_context("p1", self.bb)
+        self.assertTrue(len(ctx.high_value_credentials) >= 1)
+
+    def test_compile_populates_recent_human_decisions(self):
+        req = ReviewRequest(
+            project_id="p1",
+            action_type="submit_flag",
+            risk_level="high",
+            title="submit review",
+            proposed_action="submit flag",
+        )
+        self.review_gate.create_review(req, self.bb)
+        from attack_agent.team.protocol import HumanDecision, HumanDecisionChoice
+        self.review_gate.resolve_review(req.request_id, HumanDecision(
+            request_id=req.request_id,
+            decision=HumanDecisionChoice.APPROVED,
+            decided_by="test_user",
+        ), self.bb, "p1")
+        ctx = self.compiler.compile_manager_context("p1", self.bb)
+        self.assertTrue(len(ctx.recent_human_decisions) >= 1)
+
+    def test_compile_populates_observer_reports(self):
+        self.bb.append_event("p1", EventType.CHECKPOINT.value,
+                             {"severity": "warning", "suggested_actions": ["reassign"]},
+                             source="observer")
+        ctx = self.compiler.compile_manager_context("p1", self.bb)
+        self.assertTrue(len(ctx.observer_reports) >= 1)
+        self.assertEqual(ctx.observer_reports[0].severity, "warning")
+
+    def test_compile_without_review_gate_defaults_empty(self):
+        compiler_no_gate = ContextCompiler(
+            memory_service=self.mem_svc,
+            idea_service=self.idea_svc,
+        )
+        ctx = compiler_no_gate.compile_manager_context("p1", self.bb)
+        self.assertEqual(ctx.pending_reviews, [])
+
+    def test_failure_boundaries_from_state_facts(self):
+        """When memory_service is None, boundaries come from state.facts (action_outcome errors)."""
+        bb2 = _make_bb("l2_fallback")
+        bb2.append_event("p1", EventType.PROJECT_UPSERTED.value, {"status": "new"})
+        # action_outcome with status=error creates FAILURE_BOUNDARY in state.facts
+        bb2.append_event("p1", EventType.ACTION_OUTCOME.value,
+                         {"status": "error", "error": "blocked by WAF",
+                          "entry_id": "fb1"})
+        compiler = ContextCompiler()
+        ctx = compiler.compile_manager_context("p1", bb2)
+        self.assertTrue(len(ctx.failure_boundaries) >= 1)
+        self.assertEqual(ctx.failure_boundaries[0].description, "blocked by WAF")
+        bb2.close()
 
 
 if __name__ == "__main__":
