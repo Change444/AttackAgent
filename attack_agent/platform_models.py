@@ -63,6 +63,7 @@ class EventType(str, Enum):
     TOOL_REQUEST = "tool_request"
     KNOWLEDGE_PACKET_PUBLISHED = "knowledge_packet_published"
     KNOWLEDGE_PACKET_MERGED = "knowledge_packet_merged"
+    OBSERVER_REPORT = "observer_report"
 
 
 class PatternNodeKind(str, Enum):

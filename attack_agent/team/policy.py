@@ -80,15 +80,17 @@ class PolicyHarness:
         Each decision is recorded in Blackboard as SECURITY_VALIDATION event.
         """
         # 1. primitive visibility
-        if action.action_type == ActionType.LAUNCH_SOLVER:
-            primitives_used = self._extract_primitives_from_reason(action.reason)
-            for p in primitives_used:
-                if p in self.config.forbidden_primitives:
-                    decision = self._make_decision(
-                        PolicyOutcome.DENY, action, "forbidden primitive: " + p,
-                    )
-                    self._record(blackboard, project_id, decision)
-                    return decision
+        # L7: THROTTLE_SOLVER/REASSIGN_SOLVER are scheduling actions, not primitive executions
+        if action.action_type not in (ActionType.THROTTLE_SOLVER, ActionType.REASSIGN_SOLVER):
+            if action.action_type == ActionType.LAUNCH_SOLVER:
+                primitives_used = self._extract_primitives_from_reason(action.reason)
+                for p in primitives_used:
+                    if p in self.config.forbidden_primitives:
+                        decision = self._make_decision(
+                            PolicyOutcome.DENY, action, "forbidden primitive: " + p,
+                        )
+                        self._record(blackboard, project_id, decision)
+                        return decision
 
         # 2. budget check
         state = blackboard.rebuild_state(project_id)
@@ -111,6 +113,17 @@ class PolicyHarness:
             )
             self._record(blackboard, project_id, decision)
             return decision
+
+        # -- L7: observer-initiated safety blocks bypass critical deny --
+        # Observer safety-block actions carry "observer_" policy tags.
+        # They must reach human review, not be auto-denied by policy.
+        if action.policy_tags and any(t.startswith("observer_") for t in action.policy_tags):
+            if action.risk_level == "critical":
+                outcome = PolicyOutcome.NEEDS_REVIEW
+                reason = f"observer safety block: risk_level={action.risk_level} → needs_review (observer override)"
+                decision = self._make_decision(outcome, action, reason)
+                self._record(blackboard, project_id, decision)
+                return decision
 
         # 4. risk threshold mapping
         outcome = self._map_risk(action.risk_level)

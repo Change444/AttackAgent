@@ -21,11 +21,13 @@ from dataclasses import dataclass, field
 from attack_agent.team.blackboard import BlackboardEvent, BlackboardService
 from attack_agent.team.event_compat import is_genuine_candidate_flag
 from attack_agent.team.manager import TeamManager
+from attack_agent.team.observer import ObservationNote, ObservationReport
 from attack_agent.platform_models import EventType
-from attack_agent.team.observer import ObservationReport
 from attack_agent.team.protocol import (
+    ActionType,
     FailureBoundary,
     IdeaEntry,
+    InterventionLevel,
     MemoryEntry,
     MemoryKind,
     SolverSession,
@@ -221,18 +223,37 @@ class ContextCompiler:
                 if outcome in ("review_approved", "review_rejected", "review_modified"):
                     ctx.recent_human_decisions.append(ev.payload)
 
-        # -- L2: observer reports from CHECKPOINT events --
+        # -- L7: observer reports from OBSERVER_REPORT events --
         for ev in events:
-            if ev.event_type == EventType.CHECKPOINT.value:
+            if ev.event_type == EventType.OBSERVER_REPORT.value:
                 p = ev.payload
-                if ev.source == "observer" or p.get("severity"):
-                    ctx.observer_reports.append(ObservationReport(
-                        report_id=ev.event_id,
-                        project_id=project_id,
-                        observations=[],
-                        severity=p.get("severity", "info"),
-                        suggested_actions=p.get("suggested_actions", []),
+                notes = []
+                for obs_data in p.get("observations", []):
+                    notes.append(ObservationNote(
+                        kind=obs_data.get("kind", ""),
+                        description=obs_data.get("description", ""),
+                        solver_id=obs_data.get("solver_id", ""),
+                        evidence_refs=obs_data.get("evidence_refs", []),
                     ))
+                level_str = p.get("intervention_level", "observe")
+                try:
+                    level = InterventionLevel(level_str)
+                except ValueError:
+                    level = InterventionLevel.OBSERVE
+                action_str = p.get("recommended_action", "")
+                try:
+                    rec_action = ActionType(action_str) if action_str else None
+                except ValueError:
+                    rec_action = None
+                ctx.observer_reports.append(ObservationReport(
+                    report_id=p.get("report_id", ev.event_id),
+                    project_id=project_id,
+                    observations=notes,
+                    severity=p.get("severity", "info"),
+                    suggested_actions=p.get("suggested_actions", []),
+                    intervention_level=level,
+                    recommended_action=rec_action,
+                ))
 
         # -- L2: high-value facts (confidence >= 0.7, kind FACT) --
         for f in state.facts:

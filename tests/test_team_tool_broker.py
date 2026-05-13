@@ -76,8 +76,9 @@ class TestToolBrokerAllow(_BaseBrokerTest):
         result = self.broker.request_tool(req)
         self.assertIsInstance(result, ToolResult)
 
-    def test_allow_extract_candidate(self) -> None:
-        req = self._make_request("extract-candidate", risk_level="low")
+    def test_binary_inspect_io_free(self) -> None:
+        """L8: binary-inspect is now IO-free and returns ToolResult."""
+        req = self._make_request("binary-inspect", risk_level="low")
         result = self.broker.request_tool(req)
         self.assertIsInstance(result, ToolResult)
 
@@ -196,11 +197,11 @@ class TestToolBrokerRequiresIoContext(_BaseBrokerTest):
         self.assertIsInstance(result, ToolError)
         self.assertEqual(result.error_type, "requires_io_context")
 
-    def test_binary_inspect_requires_io(self) -> None:
+    def test_binary_inspect_is_io_free(self) -> None:
+        """L8: binary-inspect was reclassified from IO-dependent to IO-free."""
         req = self._make_request("binary-inspect", risk_level="low")
         result = self.broker.request_tool(req)
-        self.assertIsInstance(result, ToolError)
-        self.assertEqual(result.error_type, "requires_io_context")
+        self.assertIsInstance(result, ToolResult)
 
     def test_requires_io_message_mentions_primitive(self) -> None:
         req = self._make_request("http-request", risk_level="low")

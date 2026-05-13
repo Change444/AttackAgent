@@ -1,4 +1,7 @@
-"""Phase G — Observer: read-only analyzer that detects anomalies and suggests corrections."""
+"""Phase G → L7 — Observer: read-only analyzer that detects anomalies and
+suggests corrections. L7: Observer produces first-class OBSERVER_REPORT events
+with intervention_level and recommended_action, consumed by Manager scheduling.
+Observer never directly mutates facts or stops a Solver."""
 
 from __future__ import annotations
 
@@ -6,8 +9,18 @@ from dataclasses import dataclass, field
 
 from attack_agent.team.blackboard import BlackboardService
 from attack_agent.team.event_compat import is_genuine_candidate_flag
-from attack_agent.team.protocol import MemoryKind, _gen_id, _utc_now
+from attack_agent.team.protocol import ActionType, InterventionLevel, MemoryKind, _gen_id, _utc_now
 from attack_agent.platform_models import EventType
+
+# Priority map for comparing intervention levels (L0-L5)
+_LEVEL_PRIORITY = {
+    InterventionLevel.OBSERVE: 0,
+    InterventionLevel.REMINDER: 1,
+    InterventionLevel.STEER: 2,
+    InterventionLevel.THROTTLE: 3,
+    InterventionLevel.STOP_REASSIGN: 4,
+    InterventionLevel.SAFETY_BLOCK: 5,
+}
 
 
 @dataclass
@@ -25,10 +38,16 @@ class ObservationReport:
     observations: list[ObservationNote] = field(default_factory=list)
     severity: str = "info"  # info / warning / critical
     suggested_actions: list[str] = field(default_factory=list)
+    intervention_level: InterventionLevel = InterventionLevel.OBSERVE
+    recommended_action: ActionType | None = None
 
 
 class Observer:
-    """Read-only analyzer: detect anomalies and write advisory CHECKPOINT events."""
+    """Read-only analyzer: detect anomalies and write OBSERVER_REPORT events.
+
+    L7: Observer produces intervention-level reports consumed by Manager
+    scheduling decisions. Observer never directly mutates facts or stops a Solver.
+    """
 
     def __init__(self, blackboard: BlackboardService) -> None:
         self._bb = blackboard
@@ -169,6 +188,30 @@ class Observer:
                 ))
         return notes
 
+    def _compute_intervention(
+        self, notes: list[ObservationNote]
+    ) -> tuple[InterventionLevel, ActionType | None]:
+        """Map observation kinds to the highest intervention level and recommended action."""
+        kinds = {n.kind for n in notes}
+
+        # Multiple critical kinds → SAFETY_BLOCK
+        if "ignored_boundary" in kinds and "tool_misuse" in kinds:
+            return InterventionLevel.SAFETY_BLOCK, ActionType.STOP_SOLVER
+
+        # Single kind mapping (highest priority)
+        if "ignored_boundary" in kinds:
+            return InterventionLevel.STOP_REASSIGN, ActionType.REASSIGN_SOLVER
+        if "tool_misuse" in kinds:
+            return InterventionLevel.THROTTLE, ActionType.THROTTLE_SOLVER
+        if "repeated_action" in kinds:
+            return InterventionLevel.STEER, ActionType.STEER_SOLVER
+        if "stagnation" in kinds:
+            return InterventionLevel.STEER, ActionType.STEER_SOLVER
+        if "low_novelty" in kinds:
+            return InterventionLevel.REMINDER, ActionType.STEER_SOLVER
+
+        return InterventionLevel.OBSERVE, None
+
     def generate_report(self, project_id: str) -> ObservationReport:
         all_notes: list[ObservationNote] = []
 
@@ -203,23 +246,35 @@ class Observer:
             elif n.kind == "tool_misuse":
                 suggested.append(f"revoke tool {n.solver_id} or change approach")
 
+        # L7: compute intervention level and recommended action
+        intervention_level, recommended_action = self._compute_intervention(all_notes)
+
         report = ObservationReport(
             project_id=project_id,
             observations=all_notes,
             severity=severity,
             suggested_actions=suggested,
+            intervention_level=intervention_level,
+            recommended_action=recommended_action,
         )
 
-        # write advisory CHECKPOINT event (does not alter decisions)
+        # L7: write first-class OBSERVER_REPORT event (scheduling input for Manager)
         self._bb.append_event(
             project_id=project_id,
-            event_type=EventType.CHECKPOINT.value,
+            event_type=EventType.OBSERVER_REPORT.value,
             payload={
                 "report_id": report.report_id,
                 "severity": severity,
+                "intervention_level": intervention_level.value,
+                "recommended_action": recommended_action.value if recommended_action else "",
                 "observation_count": len(all_notes),
                 "observations": [
-                    {"kind": n.kind, "description": n.description, "solver_id": n.solver_id}
+                    {
+                        "kind": n.kind,
+                        "description": n.description,
+                        "solver_id": n.solver_id,
+                        "evidence_refs": n.evidence_refs,
+                    }
                     for n in all_notes
                 ],
                 "suggested_actions": suggested,

@@ -17,6 +17,7 @@ from attack_agent.team.event_compat import is_genuine_candidate_flag
 from attack_agent.team.manager import ManagerConfig, TeamManager
 from attack_agent.team.memory_reducer import MemoryReducer, KnowledgePacketBuilder
 from attack_agent.team.merge import MergeHub
+from attack_agent.team.observer import Observer
 from attack_agent.team.protocol import (
     ActionType,
     KnowledgePacket,
@@ -103,6 +104,7 @@ class SyncScheduler:
         policy_harness: PolicyHarness | None = None,
         solver_manager: SolverSessionManager | None = None,
         merge_hub: MergeHub | None = None,
+        observer: Observer | None = None,
     ) -> list[StrategyAction]:
         """One scheduling cycle for a project.
 
@@ -128,6 +130,11 @@ class SyncScheduler:
             return []
 
         current_stage = _infer_stage(events, project.status)
+
+        # -- L7: invoke Observer before context compilation --
+        if observer is not None and state.project is not None:
+            if state.project.status not in ("done", "abandoned"):
+                observer.generate_report(project_id)
 
         # -- L2: compile ManagerContext when compiler available --
         ctx = None
@@ -394,6 +401,7 @@ class SyncScheduler:
         policy_harness: PolicyHarness | None = None,
         solver_manager: SolverSessionManager | None = None,
         merge_hub: MergeHub | None = None,
+        observer: Observer | None = None,
     ) -> TeamProject:
         """Run a project until done / abandoned.
 
@@ -421,6 +429,7 @@ class SyncScheduler:
             self.schedule_cycle(
                 project_id, manager, blackboard, runtime,
                 context_compiler, policy_harness, solver_manager, merge_hub,
+                observer,
             )
 
         # max cycles reached — mark abandoned if not done
@@ -449,6 +458,7 @@ class SyncScheduler:
         policy_harness: PolicyHarness | None = None,
         solver_manager: SolverSessionManager | None = None,
         merge_hub: MergeHub | None = None,
+        observer: Observer | None = None,
     ) -> dict[str, TeamProject]:
         """Run all projects sequentially (concurrency=1)."""
         results: dict[str, TeamProject] = {}
@@ -456,6 +466,7 @@ class SyncScheduler:
             results[pid] = self.run_project(
                 pid, manager, blackboard, runtime,
                 context_compiler, policy_harness, solver_manager, merge_hub,
+                observer,
             )
         return results
 
@@ -541,6 +552,8 @@ def _action_to_event_type(action_type: ActionType) -> str:
         ActionType.CONVERGE: EventType.STRATEGY_ACTION.value,
         ActionType.ABANDON: EventType.PROJECT_ABANDONED.value,
         ActionType.STOP_SOLVER: EventType.WORKER_TIMEOUT.value,
+        ActionType.THROTTLE_SOLVER: EventType.STRATEGY_ACTION.value,
+        ActionType.REASSIGN_SOLVER: EventType.WORKER_ASSIGNED.value,
     }
     return mapping.get(action_type, EventType.REQUEUE.value)
 

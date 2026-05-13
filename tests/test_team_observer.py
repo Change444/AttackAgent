@@ -7,7 +7,7 @@ import os
 from attack_agent.team.blackboard import BlackboardService
 from attack_agent.team.blackboard_config import BlackboardConfig
 from attack_agent.team.observer import Observer, ObservationReport, ObservationNote
-from attack_agent.team.protocol import MemoryKind, IdeaStatus
+from attack_agent.team.protocol import ActionType, InterventionLevel, MemoryKind, IdeaStatus
 from attack_agent.platform_models import EventType
 
 
@@ -249,14 +249,73 @@ class TestGenerateReport(unittest.TestCase):
         self.assertEqual(report.severity, "critical")
         self.assertTrue(any(n.kind == "tool_misuse" for n in report.observations))
 
-    def test_generate_report_writes_checkpoint(self):
+    def test_generate_report_writes_observer_report_event(self):
         report = self.observer.generate_report("p1")
         events = self.bb.load_events("p1")
-        checkpoints = [e for e in events if e.event_type == EventType.CHECKPOINT.value
-                       and e.source == "observer"]
-        self.assertEqual(len(checkpoints), 1)
-        self.assertEqual(checkpoints[0].payload["report_id"], report.report_id)
-        self.assertEqual(checkpoints[0].payload["severity"], report.severity)
+        report_events = [e for e in events if e.event_type == EventType.OBSERVER_REPORT.value
+                         and e.source == "observer"]
+        self.assertEqual(len(report_events), 1)
+        self.assertEqual(report_events[0].payload["report_id"], report.report_id)
+        self.assertEqual(report_events[0].payload["severity"], report.severity)
+        # L7: verify intervention_level and recommended_action in payload
+        self.assertIn("intervention_level", report_events[0].payload)
+        self.assertIn("recommended_action", report_events[0].payload)
+
+    def test_generate_report_intervention_level_stagnation(self):
+        # 5 outcome-only events → stagnation → STEER
+        for i in range(5):
+            self.bb.append_event("p1", EventType.ACTION_OUTCOME.value, {
+                "status": "ok", "solver_id": "s1",
+            })
+        report = self.observer.generate_report("p1")
+        self.assertEqual(report.intervention_level, InterventionLevel.STEER)
+        self.assertEqual(report.recommended_action, ActionType.STEER_SOLVER)
+
+    def test_generate_report_intervention_level_tool_misuse(self):
+        for i in range(3):
+            self.bb.append_event("p1", EventType.ACTION_OUTCOME.value, {
+                "status": "error", "solver_id": "s1", "primitive": "http-request",
+            })
+        report = self.observer.generate_report("p1")
+        self.assertEqual(report.intervention_level, InterventionLevel.THROTTLE)
+        self.assertEqual(report.recommended_action, ActionType.THROTTLE_SOLVER)
+
+    def test_generate_report_intervention_level_ignored_boundary(self):
+        # create ignored boundary: same error from two solvers
+        self.bb.append_event("p1", EventType.ACTION_OUTCOME.value, {
+            "status": "error", "error": "RCE blocked by WAF",
+            "summary": "RCE blocked by WAF", "solver_id": "s1",
+        })
+        self.bb.append_event("p1", EventType.ACTION_OUTCOME.value, {
+            "status": "error", "error": "RCE blocked by WAF",
+            "summary": "RCE blocked by WAF", "solver_id": "s2",
+        })
+        report = self.observer.generate_report("p1")
+        self.assertEqual(report.intervention_level, InterventionLevel.STOP_REASSIGN)
+        self.assertEqual(report.recommended_action, ActionType.REASSIGN_SOLVER)
+
+    def test_generate_report_intervention_level_safety_block(self):
+        # tool_misuse + ignored_boundary → SAFETY_BLOCK
+        for i in range(3):
+            self.bb.append_event("p1", EventType.ACTION_OUTCOME.value, {
+                "status": "error", "solver_id": "s1", "primitive": "http-request",
+            })
+        self.bb.append_event("p1", EventType.ACTION_OUTCOME.value, {
+            "status": "error", "error": "WAF block",
+            "summary": "WAF block", "solver_id": "s1",
+        })
+        self.bb.append_event("p1", EventType.ACTION_OUTCOME.value, {
+            "status": "error", "error": "WAF block",
+            "summary": "WAF block", "solver_id": "s2",
+        })
+        report = self.observer.generate_report("p1")
+        self.assertEqual(report.intervention_level, InterventionLevel.SAFETY_BLOCK)
+        self.assertEqual(report.recommended_action, ActionType.STOP_SOLVER)
+
+    def test_generate_report_intervention_level_empty_report(self):
+        report = self.observer.generate_report("p1")
+        self.assertEqual(report.intervention_level, InterventionLevel.OBSERVE)
+        self.assertIsNone(report.recommended_action)
 
     def test_generate_report_suggested_actions(self):
         # create stagnation scenario

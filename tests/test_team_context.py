@@ -336,12 +336,16 @@ class TestL2ManagerContextExpansion(unittest.TestCase):
         self.assertTrue(len(ctx.recent_human_decisions) >= 1)
 
     def test_compile_populates_observer_reports(self):
-        self.bb.append_event("p1", EventType.CHECKPOINT.value,
-                             {"severity": "warning", "suggested_actions": ["reassign"]},
+        self.bb.append_event("p1", EventType.OBSERVER_REPORT.value,
+                             {"severity": "warning", "suggested_actions": ["reassign"],
+                              "intervention_level": "steer", "recommended_action": "steer_solver",
+                              "observations": [{"kind": "stagnation", "description": "test", "solver_id": "s1", "evidence_refs": []}]},
                              source="observer")
         ctx = self.compiler.compile_manager_context("p1", self.bb)
         self.assertTrue(len(ctx.observer_reports) >= 1)
         self.assertEqual(ctx.observer_reports[0].severity, "warning")
+        self.assertEqual(ctx.observer_reports[0].intervention_level.value, "steer")
+        self.assertTrue(len(ctx.observer_reports[0].observations) >= 1)
 
     def test_compile_without_review_gate_defaults_empty(self):
         compiler_no_gate = ContextCompiler(

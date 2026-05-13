@@ -34,6 +34,15 @@ class HumanReviewGate:
         causal_ref: str | None = None,
     ) -> ReviewRequest:
         """Create a ReviewRequest and write it to Blackboard."""
+        # L7: enrich observer review descriptions with intervention context
+        if request.proposed_action_payload:
+            tags = request.proposed_action_payload.get("policy_tags", [])
+            if any(t.startswith("observer_") for t in tags):
+                intervention = request.proposed_action_payload.get("intervention_level", "")
+                rec_action = request.proposed_action_payload.get("recommended_action", "")
+                if intervention or rec_action:
+                    observer_note = f" [observer: level={intervention}, recommended={rec_action}]"
+                    request.description = request.description + observer_note
         blackboard.append_event(
             project_id=request.project_id,
             event_type=EventType.SECURITY_VALIDATION.value,

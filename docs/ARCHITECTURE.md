@@ -118,13 +118,13 @@ Status: **L6 resolved** — KnowledgePacket is the formal Solver sharing payload
 
 ### 4.4 Observer Gap
 
-Observer is currently an on-demand analyzer. It writes advisory checkpoint events, but Scheduler does not automatically consume them.
-
-Required direction:
-
-- Run Observer periodically or when a Solver crosses drift/stagnation thresholds.
-- Convert reports into Manager-visible recommendations.
-- Escalate stop/reassign/scope/submit recommendations through policy and review.
+Status: **L7 resolved** — Observer is a mandatory scheduling-loop participant.
+`Observer.generate_report()` writes `OBSERVER_REPORT` events (not CHECKPOINT).
+`ContextCompiler` reconstructs full `ObservationReport` data including observations,
+intervention_level, and recommended_action. `TeamManager.decide_observer_response()`
+produces scheduling actions (steer/throttle/stop/reassign) based on intervention level.
+PolicyHarness allows observer safety-block actions through as needs_review instead of deny.
+Observer never directly mutates facts or stops a Solver.
 
 ### 4.5 Review Gap
 
@@ -176,9 +176,9 @@ Required direction:
 | `team/context.py` | Context compiler exists | Mandatory context source for Manager/Solver/Observer |
 | `team/policy.py` | Partial action policy | Unified action/tool/review/submission policy |
 | `team/review.py` | Review lifecycle | Execution gate with pause/resume |
-| `team/observer.py` | Manual advisory analyzer | Sidecar reviewer feeding Manager |
+| `team/observer.py` | Mandatory scheduling-loop participant | Produces intervention-level reports consumed by Manager — L7 integrated |
 | `team/merge.py` | Dedup/arbitration helpers | Knowledge merge and route hub with packet pipeline (validate→dedup→arbitrate→route) |
-| `team/tool_broker.py` | IO-free primitive broker | All tool execution broker |
+| `team/tool_broker.py` | All tool execution broker with IOContextProvider | All tool execution broker — policy gate + event journal for all primitives |
 
 ## 6. Implementation Doctrine
 

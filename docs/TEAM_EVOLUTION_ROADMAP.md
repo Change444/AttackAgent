@@ -237,6 +237,8 @@ Acceptance tests:
 
 ## 10. Phase L7 - Observer in the Scheduling Loop
 
+Status: complete
+
 Goal: Observer detects drift and Manager acts on it.
 
 Implementation plan:
@@ -261,6 +263,8 @@ Acceptance tests:
 - Critical observer reports create review or policy-block events.
 
 ## 11. Phase L8 - ToolBroker Becomes the Tool Execution Path
+
+Status: complete
 
 Goal: all primitive/tool execution is brokered and policy-visible.
 

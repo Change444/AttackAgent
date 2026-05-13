@@ -19,12 +19,24 @@ from attack_agent.team.blackboard import BlackboardEvent
 from attack_agent.team.event_compat import is_genuine_candidate_flag
 from attack_agent.team.protocol import (
     ActionType,
+    InterventionLevel,
     StrategyAction,
     TeamProject,
 )
 
 if TYPE_CHECKING:
     from attack_agent.team.context import ManagerContext
+
+
+# L7: priority map for comparing intervention levels (L0-L5)
+_LEVEL_PRIORITY = {
+    InterventionLevel.OBSERVE: 0,
+    InterventionLevel.REMINDER: 1,
+    InterventionLevel.STEER: 2,
+    InterventionLevel.THROTTLE: 3,
+    InterventionLevel.STOP_REASSIGN: 4,
+    InterventionLevel.SAFETY_BLOCK: 5,
+}
 
 
 @dataclass
@@ -119,6 +131,121 @@ class TeamManager:
 
     # -- L2: context-aware decisions --
 
+    def decide_observer_response(
+        self,
+        project_id: str,
+        ctx: ManagerContext,
+    ) -> StrategyAction | None:
+        """Produce a scheduling action in response to Observer reports.
+
+        Scans ctx.observer_reports for the highest intervention level
+        and produces the corresponding action. Returns None if no
+        report requires action beyond passive observation.
+        """
+        if not ctx.observer_reports:
+            return None
+
+        # Candidate flags override STEER/THROTTLE — let normal convergence proceed
+        has_candidates = bool(ctx.candidate_flags)
+
+        # Find highest intervention level among reports
+        highest_priority = 0
+        highest_level = InterventionLevel.OBSERVE
+        target_solver_id = ""
+        reason_parts: list[str] = []
+
+        for report in ctx.observer_reports:
+            priority = _LEVEL_PRIORITY.get(report.intervention_level, 0)
+            if priority > highest_priority:
+                highest_priority = priority
+                highest_level = report.intervention_level
+            # Collect solver IDs from observations for targeting
+            for obs in report.observations:
+                if obs.solver_id:
+                    target_solver_id = obs.solver_id
+            reason_parts.append(
+                f"observer_{report.intervention_level.value}: {report.severity}"
+            )
+
+        # L0/L1: no scheduling action needed
+        if highest_level in (InterventionLevel.OBSERVE, InterventionLevel.REMINDER):
+            return None
+
+        # STEER/THROTTLE: candidate flags take priority
+        if has_candidates and highest_level in (InterventionLevel.STEER, InterventionLevel.THROTTLE):
+            return None
+
+        # L2: steer solver
+        if highest_level == InterventionLevel.STEER:
+            solver_id = target_solver_id or (
+                ctx.solver_states[0].solver_id if ctx.solver_states else ""
+            )
+            return StrategyAction(
+                action_type=ActionType.STEER_SOLVER,
+                project_id=project_id,
+                target_solver_id=solver_id,
+                reason=f"observer steer: {', '.join(reason_parts)}",
+                risk_level="medium",
+                policy_tags=["observer_steered"],
+            )
+
+        # L3: throttle solver
+        if highest_level == InterventionLevel.THROTTLE:
+            solver_id = target_solver_id or (
+                ctx.solver_states[0].solver_id if ctx.solver_states else ""
+            )
+            return StrategyAction(
+                action_type=ActionType.THROTTLE_SOLVER,
+                project_id=project_id,
+                target_solver_id=solver_id,
+                reason=f"observer throttle: {', '.join(reason_parts)}",
+                risk_level="medium",
+                policy_tags=["observer_throttled"],
+            )
+
+        # L4: stop or reassign solver
+        if highest_level == InterventionLevel.STOP_REASSIGN:
+            solver_id = target_solver_id or (
+                ctx.solver_states[0].solver_id if ctx.solver_states else ""
+            )
+            if ctx.solver_states and len(ctx.solver_states) > 1:
+                return StrategyAction(
+                    action_type=ActionType.REASSIGN_SOLVER,
+                    project_id=project_id,
+                    target_solver_id=solver_id,
+                    reason=f"observer reassign: {', '.join(reason_parts)}",
+                    risk_level="high",
+                    requires_review=True,
+                    policy_tags=["observer_reassigned"],
+                )
+            else:
+                return StrategyAction(
+                    action_type=ActionType.STOP_SOLVER,
+                    project_id=project_id,
+                    target_solver_id=solver_id,
+                    reason=f"observer stop: {', '.join(reason_parts)}",
+                    risk_level="high",
+                    requires_review=True,
+                    policy_tags=["observer_stopped"],
+                )
+
+        # L5: safety block — always requires review
+        if highest_level == InterventionLevel.SAFETY_BLOCK:
+            solver_id = target_solver_id or (
+                ctx.solver_states[0].solver_id if ctx.solver_states else ""
+            )
+            return StrategyAction(
+                action_type=ActionType.STOP_SOLVER,
+                project_id=project_id,
+                target_solver_id=solver_id,
+                reason=f"observer safety block: {', '.join(reason_parts)}",
+                risk_level="critical",
+                requires_review=True,
+                policy_tags=["observer_safety_block"],
+            )
+
+        return None
+
     def decide_stage_transition_from_context(
         self,
         project_id: str,
@@ -144,6 +271,11 @@ class TeamManager:
                     budget_request=0.0,
                     policy_tags=["budget_constrained"],
                 )
+
+        # -- L7: observer response overrides default stage decision --
+        observer_action = self.decide_observer_response(project_id, ctx)
+        if observer_action is not None:
+            return observer_action
 
         if current_stage == "bootstrap":
             return StrategyAction(

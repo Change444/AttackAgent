@@ -313,5 +313,9 @@ def apply_event_to_state(
                 merged_from_ids=p.get("merged_from_ids", []),
                 created_at=timestamp,
             )
+    elif et == EventType.OBSERVER_REPORT.value:
+        # Observer reports do not mutate materialized state.
+        # They are scheduling inputs consumed by Manager via ContextCompiler.
+        pass
 
     return state_project

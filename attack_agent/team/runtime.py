@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from attack_agent.config import BrowserConfig, HttpConfig
 from attack_agent.platform_models import EventType
 from attack_agent.team.benchmark import BenchmarkRunner, RegressionReport, RunMetrics, MetricsComparison
 from attack_agent.team.blackboard import BlackboardService, MaterializedState
@@ -44,6 +45,7 @@ from attack_agent.team.scheduler import SchedulerConfig, SyncScheduler
 from attack_agent.team.solver import SolverSessionConfig, SolverSessionManager
 from attack_agent.team.submission import SubmissionConfig, SubmissionVerifier, VerificationResult
 from attack_agent.team.tool_broker import ToolBroker, ToolRequest, ToolResult, ToolError
+from attack_agent.team.io_context import WorkerRuntimeIOContextProvider
 from attack_agent.team.state_sync import StateSyncService, SyncConfig
 from attack_agent.team.memory_reducer import KnowledgePacketBuilder, MemoryReducer
 from attack_agent.runtime import PrimitiveRegistry
@@ -133,7 +135,18 @@ class TeamRuntime:
         self.merge = MergeHub(self.blackboard)
         self.verifier = SubmissionVerifier(self.blackboard)
         self.observer = Observer(self.blackboard)
-        self.tool_broker = ToolBroker(PrimitiveRegistry(), self.policy, self.blackboard)
+        # L8: IOContextProvider for IO-dependent primitive execution
+        browser_config = worker_runtime._browser_config if worker_runtime is not None else BrowserConfig()
+        http_config = worker_runtime._http_config if worker_runtime is not None else HttpConfig()
+        self._io_context_provider = WorkerRuntimeIOContextProvider(
+            browser_config=browser_config,
+            http_config=http_config,
+            state_graph=state_graph,
+        )
+        self.tool_broker = ToolBroker(
+            PrimitiveRegistry(), self.policy, self.blackboard,
+            io_context_provider=self._io_context_provider,
+        )
         self.state_sync = StateSyncService(SyncConfig())
 
         # Real executor components (Phase K-1)
@@ -161,6 +174,7 @@ class TeamRuntime:
         return self.scheduler.run_project(
             project.project_id, self.manager, self.blackboard, self,
             self.context, self.policy, self.solver_manager, self.merge,
+            self.observer,
         )
 
     def run_all(self, challenge_ids: list[str]) -> dict[str, TeamProject]:
@@ -215,7 +229,7 @@ class TeamRuntime:
                 )
 
         # 3. Run all projects via SyncScheduler
-        results = self.scheduler.run_all(self.manager, self.blackboard, project_ids, self, self.context, self.policy, self.solver_manager, self.merge)
+        results = self.scheduler.run_all(self.manager, self.blackboard, project_ids, self, self.context, self.policy, self.solver_manager, self.merge, self.observer)
 
         # 4. Sync StateGraphService → Blackboard final state first (Phase K-3)
         for pid in project_ids:
@@ -848,6 +862,10 @@ class TeamRuntime:
         return self.merge.process_incoming_packets(project_id, packets)
 
     # -- cleanup --
+
+    def release_io_context(self, project_id: str, solver_id: str) -> None:
+        """Release IO context objects for a project+solver pair."""
+        self._io_context_provider.release_context(project_id, solver_id)
 
     def close(self) -> None:
         """Close the Blackboard database connection."""

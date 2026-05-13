@@ -14,6 +14,7 @@ from typing import Any
 
 __all__ = [
     "ActionType",
+    "InterventionLevel",
     "SolverStatus",
     "MemoryKind",
     "IdeaStatus",
@@ -50,6 +51,17 @@ class ActionType(str, Enum):
     CONVERGE = "converge"
     ABANDON = "abandon"
     USE_PRIMITIVE = "use_primitive"
+    THROTTLE_SOLVER = "throttle_solver"
+    REASSIGN_SOLVER = "reassign_solver"
+
+
+class InterventionLevel(str, Enum):
+    OBSERVE = "observe"
+    REMINDER = "reminder"
+    STEER = "steer"
+    THROTTLE = "throttle"
+    STOP_REASSIGN = "stop_reassign"
+    SAFETY_BLOCK = "safety_block"
 
 
 class SolverStatus(str, Enum):
