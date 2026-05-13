@@ -19,6 +19,7 @@ __all__ = [
     "IdeaStatus",
     "PolicyOutcome",
     "ReviewStatus",
+    "KnowledgePacketType",
     "HumanDecisionChoice",
     "TeamProject",
     "StrategyAction",
@@ -26,6 +27,7 @@ __all__ = [
     "MemoryEntry",
     "IdeaEntry",
     "FailureBoundary",
+    "KnowledgePacket",
     "PolicyDecision",
     "ReviewRequest",
     "HumanDecision",
@@ -95,6 +97,17 @@ class ReviewStatus(str, Enum):
     REJECTED = "rejected"
     MODIFIED = "modified"
     EXPIRED = "expired"
+
+
+class KnowledgePacketType(str, Enum):
+    FACT = "fact"
+    IDEA = "idea"
+    FAILURE_BOUNDARY = "failure_boundary"
+    CREDENTIAL = "credential"
+    ENDPOINT = "endpoint"
+    ARTIFACT_SUMMARY = "artifact_summary"
+    CANDIDATE_FLAG = "candidate_flag"
+    HELP_REQUEST = "help_request"
 
 
 class HumanDecisionChoice(str, Enum):
@@ -228,6 +241,22 @@ class FailureBoundary:
     project_id: str = ""
     description: str = ""
     evidence_refs: list[str] = field(default_factory=list)
+    created_at: str = field(default_factory=_utc_now)
+
+
+@dataclass
+class KnowledgePacket:
+    packet_id: str = field(default_factory=_gen_id)
+    project_id: str = ""
+    packet_type: KnowledgePacketType = KnowledgePacketType.FACT
+    source_solver_id: str = ""
+    content: str = ""
+    confidence: float = 0.0
+    evidence_refs: list[str] = field(default_factory=list)
+    routing_priority: int = 100
+    suggested_recipients: list[str] = field(default_factory=list)
+    merge_status: str = "pending"
+    merged_from_ids: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=_utc_now)
 
 

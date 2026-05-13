@@ -61,6 +61,8 @@ class EventType(str, Enum):
     SEMANTIC_RETRIEVAL = "semantic_retrieval"
     FREE_EXPLORATION_PLAN = "free_exploration_plan"
     TOOL_REQUEST = "tool_request"
+    KNOWLEDGE_PACKET_PUBLISHED = "knowledge_packet_published"
+    KNOWLEDGE_PACKET_MERGED = "knowledge_packet_merged"
 
 
 class PatternNodeKind(str, Enum):

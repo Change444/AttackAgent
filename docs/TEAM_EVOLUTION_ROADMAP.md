@@ -208,6 +208,8 @@ Acceptance tests:
 
 ## 9. Phase L6 - KnowledgePacket and MergeHub Routing
 
+Status: complete
+
 Goal: make Solver collaboration structured and low-noise.
 
 Implementation plan:

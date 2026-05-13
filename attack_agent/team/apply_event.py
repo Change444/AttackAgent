@@ -11,6 +11,8 @@ from attack_agent.team.event_compat import classify_candidate_flag_event
 from attack_agent.team.protocol import (
     IdeaEntry,
     IdeaStatus,
+    KnowledgePacket,
+    KnowledgePacketType,
     MemoryEntry,
     MemoryKind,
     SolverSession,
@@ -60,13 +62,15 @@ def apply_event_to_state(
     state_facts: list[MemoryEntry],
     idea_index: dict[str, IdeaEntry],
     session_index: dict[str, SolverSession],
+    packet_index: dict[str, KnowledgePacket] | None = None,
     source: str = "system",
 ) -> TeamProject | None:
     """Apply a single event to state components.
 
     Returns the updated project (or None if unchanged).
-    Mutates state_facts, idea_index, session_index in-place.
+    Mutates state_facts, idea_index, session_index, packet_index in-place.
     """
+    pidx = packet_index if packet_index is not None else {}
     p = payload
     et = event_type
 
@@ -259,5 +263,55 @@ def apply_event_to_state(
         if state_project is not None:
             state_project.status = "done"
             state_project.updated_at = timestamp
+    elif et == EventType.KNOWLEDGE_PACKET_PUBLISHED.value:
+        pkt_id = p.get("packet_id", event_id)
+        packet = KnowledgePacket(
+            packet_id=pkt_id,
+            project_id=project_id,
+            packet_type=KnowledgePacketType(p.get("packet_type", "fact")),
+            source_solver_id=p.get("source_solver_id", ""),
+            content=p.get("content", ""),
+            confidence=p.get("confidence", 0.0),
+            evidence_refs=p.get("evidence_refs", []),
+            routing_priority=p.get("routing_priority", 100),
+            suggested_recipients=p.get("suggested_recipients", []),
+            merge_status="pending",
+            created_at=timestamp,
+        )
+        pidx[pkt_id] = packet
+    elif et == EventType.KNOWLEDGE_PACKET_MERGED.value:
+        pkt_id = p.get("packet_id", "")
+        if pkt_id and pkt_id in pidx:
+            existing = pidx[pkt_id]
+            pidx[pkt_id] = KnowledgePacket(
+                packet_id=pkt_id,
+                project_id=existing.project_id,
+                packet_type=existing.packet_type,
+                source_solver_id=existing.source_solver_id,
+                content=existing.content,
+                confidence=p.get("confidence", existing.confidence),
+                evidence_refs=existing.evidence_refs,
+                routing_priority=p.get("routing_priority", existing.routing_priority),
+                suggested_recipients=existing.suggested_recipients,
+                merge_status=p.get("merge_status", "accepted"),
+                merged_from_ids=p.get("merged_from_ids", existing.merged_from_ids),
+                created_at=existing.created_at,
+            )
+        elif pkt_id:
+            # Packet merged without prior published event — create from payload
+            pidx[pkt_id] = KnowledgePacket(
+                packet_id=pkt_id,
+                project_id=project_id,
+                packet_type=KnowledgePacketType(p.get("packet_type", "fact")),
+                source_solver_id=p.get("source_solver_id", ""),
+                content=p.get("content", ""),
+                confidence=p.get("confidence", 0.0),
+                evidence_refs=p.get("evidence_refs", []),
+                routing_priority=p.get("routing_priority", 100),
+                suggested_recipients=p.get("suggested_recipients", []),
+                merge_status=p.get("merge_status", "accepted"),
+                merged_from_ids=p.get("merged_from_ids", []),
+                created_at=timestamp,
+            )
 
     return state_project

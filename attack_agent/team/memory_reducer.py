@@ -13,6 +13,8 @@ from attack_agent.platform_models import EventType
 from attack_agent.team.blackboard import BlackboardEvent
 from attack_agent.team.context import SOLVER_CONTEXT_LIMITS
 from attack_agent.team.protocol import (
+    KnowledgePacket,
+    KnowledgePacketType,
     MemoryEntry,
     MemoryKind,
 )
@@ -157,3 +159,90 @@ class MemoryReducer:
         result.scratchpad_summary = " | ".join(parts)
         if len(result.scratchpad_summary) > max_chars:
             result.scratchpad_summary = result.scratchpad_summary[:max_chars]
+
+
+class KnowledgePacketBuilder:
+    """Build KnowledgePackets from ReducedMemory and execution results.
+
+    L6: converts structured memory into the formal sharing protocol
+    so MergeHub can validate, dedup, arbitrate, and route them.
+    """
+
+    def build_packets(
+        self,
+        reduced: ReducedMemory,
+        project_id: str,
+        solver_id: str,
+    ) -> list[KnowledgePacket]:
+        packets: list[KnowledgePacket] = []
+
+        for f in reduced.facts:
+            if f.confidence >= 0.5:
+                packets.append(KnowledgePacket(
+                    project_id=project_id,
+                    packet_type=KnowledgePacketType.FACT,
+                    source_solver_id=solver_id,
+                    content=f.content,
+                    confidence=f.confidence,
+                    evidence_refs=f.evidence_refs,
+                    routing_priority=int(f.confidence * 100),
+                    suggested_recipients=["all"],
+                ))
+
+        for c in reduced.credentials:
+            packets.append(KnowledgePacket(
+                project_id=project_id,
+                packet_type=KnowledgePacketType.CREDENTIAL,
+                source_solver_id=solver_id,
+                content=c.content,
+                confidence=c.confidence,
+                evidence_refs=c.evidence_refs,
+                routing_priority=90,
+                suggested_recipients=["all"],
+            ))
+
+        for e in reduced.endpoints:
+            packets.append(KnowledgePacket(
+                project_id=project_id,
+                packet_type=KnowledgePacketType.ENDPOINT,
+                source_solver_id=solver_id,
+                content=e.content,
+                confidence=e.confidence,
+                evidence_refs=e.evidence_refs,
+                routing_priority=80,
+                suggested_recipients=["all"],
+            ))
+
+        for b in reduced.failure_boundaries:
+            packets.append(KnowledgePacket(
+                project_id=project_id,
+                packet_type=KnowledgePacketType.FAILURE_BOUNDARY,
+                source_solver_id=solver_id,
+                content=b.content,
+                confidence=b.confidence,
+                evidence_refs=b.evidence_refs,
+                routing_priority=70,
+                suggested_recipients=["all"],
+            ))
+
+        return packets
+
+    def build_help_request(
+        self,
+        project_id: str,
+        solver_id: str,
+        description: str,
+        target_profile: str,
+        evidence_refs: list[str] | None = None,
+    ) -> KnowledgePacket:
+        """Build a HELP_REQUEST packet targeting a solver with a specific profile."""
+        return KnowledgePacket(
+            project_id=project_id,
+            packet_type=KnowledgePacketType.HELP_REQUEST,
+            source_solver_id=solver_id,
+            content=description,
+            confidence=0.3,
+            evidence_refs=evidence_refs or [],
+            routing_priority=50,
+            suggested_recipients=[f"profile:{target_profile}"],
+        )

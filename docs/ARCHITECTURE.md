@@ -110,17 +110,11 @@ Status: **L4 resolved** — SolverContextPack now carries facts, credentials, en
 
 **L5 resolved** — SolverSession now has real long-lived ownership. Sessions are created/claimed/started before execution via SolverSessionManager in the scheduling path. Outcome events include solver_id. Idea leases are exclusive. L4 field updates use WORKER_HEARTBEAT events instead of WORKER_ASSIGNED to avoid state machine conflicts.
 
-Remaining gap: Inbox remains empty until L6 (KnowledgePacket).
+**L6 resolved** — SolverContextPack.inbox is now populated from routed/targeted KnowledgePackets. MergeHub validates, dedupes, arbitrates, and routes packets. Global accepted packets update Blackboard (OBSERVATION/CANDIDATE_FLAG events). Targeted packets enter Solver inbox via KNOWLEDGE_PACKET_MERGED events. Conflicting facts produce merge decisions visible in Blackboard. Help requests route to solver profiles.
 
 ### 4.3 Collaboration Gap
 
-There is no formal `KnowledgePacket` protocol. `MergeHub` can dedupe facts/ideas and arbitrate candidates, but Solver-to-Solver intelligence flow is not yet the main collaboration path.
-
-Required direction:
-
-- Add `KnowledgePacket` as the only Solver sharing payload.
-- Route packets through `MergeHub` before they become global facts or inbox messages.
-- Keep raw logs as evidence references, not broadcast content.
+Status: **L6 resolved** — KnowledgePacket is the formal Solver sharing payload with types (fact, idea, failure_boundary, credential, endpoint, artifact_summary, candidate_flag, help_request), source solver, confidence, evidence refs, routing priority, and suggested recipients. MergeHub validates, dedupes, arbitrates, and routes packets through the full pipeline. Global accepted packets update Blackboard as OBSERVATION/CANDIDATE_FLAG/ACTION_OUTCOME events. Targeted packets enter Solver inbox via KNOWLEDGE_PACKET_MERGED events. Raw logs remain evidence references, not broadcast content.
 
 ### 4.4 Observer Gap
 
@@ -183,7 +177,7 @@ Required direction:
 | `team/policy.py` | Partial action policy | Unified action/tool/review/submission policy |
 | `team/review.py` | Review lifecycle | Execution gate with pause/resume |
 | `team/observer.py` | Manual advisory analyzer | Sidecar reviewer feeding Manager |
-| `team/merge.py` | Dedup/arbitration helpers | Knowledge merge and route hub |
+| `team/merge.py` | Dedup/arbitration helpers | Knowledge merge and route hub with packet pipeline (validate→dedup→arbitrate→route) |
 | `team/tool_broker.py` | IO-free primitive broker | All tool execution broker |
 
 ## 6. Implementation Doctrine

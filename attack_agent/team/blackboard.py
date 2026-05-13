@@ -19,6 +19,7 @@ from attack_agent.platform_models import EventType
 from attack_agent.team.blackboard_config import BlackboardConfig
 from attack_agent.team.protocol import (
     IdeaEntry,
+    KnowledgePacket,
     MemoryEntry,
     MemoryKind,
     SolverSession,
@@ -53,6 +54,7 @@ class MaterializedState:
     facts: list[MemoryEntry] = field(default_factory=list)
     ideas: list[IdeaEntry] = field(default_factory=list)
     sessions: list[SolverSession] = field(default_factory=list)
+    packets: list[KnowledgePacket] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -166,12 +168,16 @@ class BlackboardService:
         idea_index: dict[str, IdeaEntry] = {}
         # Track latest session state per solver_id — later events override earlier ones.
         session_index: dict[str, SolverSession] = {}
+        # L6: Track latest packet state per packet_id
+        packet_index: dict[str, KnowledgePacket] = {}
         for ev in events:
-            self._apply_event(state, ev, idea_index, session_index)
+            self._apply_event(state, ev, idea_index, session_index, packet_index)
         # Collapse ideas to latest state per idea_id
         state.ideas = list(idea_index.values())
         # Collapse sessions to latest state per solver_id
         state.sessions = list(session_index.values())
+        # L6: Collapse packets
+        state.packets = list(packet_index.values())
         return state
 
     def list_facts(self, project_id: str) -> list[MemoryEntry]:
@@ -220,9 +226,11 @@ class BlackboardService:
 
     def _apply_event(self, state: MaterializedState, ev: BlackboardEvent,
                       idea_index: dict[str, IdeaEntry] | None = None,
-                      session_index: dict[str, SolverSession] | None = None) -> None:
+                      session_index: dict[str, SolverSession] | None = None,
+                      packet_index: dict[str, KnowledgePacket] | None = None) -> None:
         idx = idea_index if idea_index is not None else {}
         sidx = session_index if session_index is not None else {}
+        pidx = packet_index if packet_index is not None else {}
         state.project = apply_event_to_state(
             project_id=ev.project_id,
             event_type=ev.event_type,
@@ -233,6 +241,7 @@ class BlackboardService:
             state_facts=state.facts,
             idea_index=idx,
             session_index=sidx,
+            packet_index=pidx,
             source=ev.source,
         )
         # If caller didn't provide indexes, merge temp indexes into state lists
@@ -240,3 +249,5 @@ class BlackboardService:
             state.ideas.extend(idx.values())
         if session_index is None:
             state.sessions.extend(sidx.values())
+        if packet_index is None:
+            state.packets.extend(pidx.values())

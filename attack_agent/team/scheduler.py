@@ -15,9 +15,11 @@ from attack_agent.platform_models import EventType
 from attack_agent.team.blackboard import BlackboardService
 from attack_agent.team.event_compat import is_genuine_candidate_flag
 from attack_agent.team.manager import ManagerConfig, TeamManager
-from attack_agent.team.memory_reducer import MemoryReducer
+from attack_agent.team.memory_reducer import MemoryReducer, KnowledgePacketBuilder
+from attack_agent.team.merge import MergeHub
 from attack_agent.team.protocol import (
     ActionType,
+    KnowledgePacket,
     MemoryEntry,
     MemoryKind,
     ReviewRequest,
@@ -100,6 +102,7 @@ class SyncScheduler:
         context_compiler: ContextCompiler | None = None,
         policy_harness: PolicyHarness | None = None,
         solver_manager: SolverSessionManager | None = None,
+        merge_hub: MergeHub | None = None,
     ) -> list[StrategyAction]:
         """One scheduling cycle for a project.
 
@@ -256,6 +259,41 @@ class SyncScheduler:
                             runtime.memory.store_entry(project_id, entry)
                         for entry in reduced.endpoints:
                             runtime.memory.store_entry(project_id, entry)
+
+                        # -- L6: generate KnowledgePackets and route through MergeHub --
+                        if merge_hub is not None and solver_id:
+                            pkt_builder = KnowledgePacketBuilder()
+                            packets = pkt_builder.build_packets(reduced, project_id, solver_id)
+                            # Write KNOWLEDGE_PACKET_PUBLISHED events for each packet
+                            for pkt in packets:
+                                blackboard.append_event(
+                                    project_id=project_id,
+                                    event_type=EventType.KNOWLEDGE_PACKET_PUBLISHED.value,
+                                    payload=to_dict(pkt),
+                                    source="scheduler_l6",
+                                )
+                            # Route packets through MergeHub
+                            route_result = merge_hub.process_incoming_packets(project_id, packets)
+                            # Deliver targeted packets to Solver inbox
+                            for target_solver_id, targeted_pkts in route_result.targeted_packets.items():
+                                for pkt in targeted_pkts:
+                                    blackboard.append_event(
+                                        project_id=project_id,
+                                        event_type=EventType.KNOWLEDGE_PACKET_MERGED.value,
+                                        payload={
+                                            "packet_id": pkt.packet_id,
+                                            "packet_type": pkt.packet_type.value,
+                                            "content": pkt.content,
+                                            "confidence": pkt.confidence,
+                                            "merge_status": "accepted",
+                                            "routing_priority": pkt.routing_priority,
+                                            "source_solver_id": pkt.source_solver_id,
+                                            "suggested_recipients": pkt.suggested_recipients,
+                                            "evidence_refs": pkt.evidence_refs,
+                                        },
+                                        source="merge_hub_targeted",
+                                    )
+
                         # Update SolverSession with L4 fields via WORKER_HEARTBEAT
                         local_mem_ids = [m.entry_id for m in solver_ctx.local_memory[:5]]
                         active_idea_id = solver_ctx.active_idea.idea_id if solver_ctx.active_idea else ""
@@ -355,6 +393,7 @@ class SyncScheduler:
         context_compiler: ContextCompiler | None = None,
         policy_harness: PolicyHarness | None = None,
         solver_manager: SolverSessionManager | None = None,
+        merge_hub: MergeHub | None = None,
     ) -> TeamProject:
         """Run a project until done / abandoned.
 
@@ -381,7 +420,7 @@ class SyncScheduler:
 
             self.schedule_cycle(
                 project_id, manager, blackboard, runtime,
-                context_compiler, policy_harness, solver_manager,
+                context_compiler, policy_harness, solver_manager, merge_hub,
             )
 
         # max cycles reached — mark abandoned if not done
@@ -409,13 +448,14 @@ class SyncScheduler:
         context_compiler: ContextCompiler | None = None,
         policy_harness: PolicyHarness | None = None,
         solver_manager: SolverSessionManager | None = None,
+        merge_hub: MergeHub | None = None,
     ) -> dict[str, TeamProject]:
         """Run all projects sequentially (concurrency=1)."""
         results: dict[str, TeamProject] = {}
         for pid in project_ids:
             results[pid] = self.run_project(
                 pid, manager, blackboard, runtime,
-                context_compiler, policy_harness, solver_manager,
+                context_compiler, policy_harness, solver_manager, merge_hub,
             )
         return results
 

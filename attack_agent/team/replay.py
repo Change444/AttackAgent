@@ -13,6 +13,7 @@ from typing import Any
 from attack_agent.team.apply_event import apply_event_to_state
 from attack_agent.team.protocol import (
     IdeaEntry,
+    KnowledgePacket,
     MemoryEntry,
     SolverSession,
     TeamProject,
@@ -44,10 +45,13 @@ class RunDiffResult:
 
 def _collapse_indexes(state: Any,
                        idea_index: dict[str, IdeaEntry],
-                       session_index: dict[str, SolverSession]) -> Any:
-    """Collapse idea/session indexes into the state lists (latest-wins per id)."""
+                       session_index: dict[str, SolverSession],
+                       packet_index: dict[str, KnowledgePacket] | None = None) -> Any:
+    """Collapse idea/session/packet indexes into the state lists (latest-wins per id)."""
     state.ideas = list(idea_index.values())
     state.sessions = list(session_index.values())
+    if packet_index is not None:
+        state.packets = list(packet_index.values())
     return state
 
 
@@ -77,6 +81,7 @@ class ReplayEngine:
         facts: list[MemoryEntry] = []
         idea_index: dict[str, IdeaEntry] = {}
         session_index: dict[str, SolverSession] = {}
+        packet_index: dict[str, KnowledgePacket] = {}
 
         for i, ev in enumerate(events):
             project = apply_event_to_state(
@@ -89,13 +94,14 @@ class ReplayEngine:
                 state_facts=facts,
                 idea_index=idea_index,
                 session_index=session_index,
+                packet_index=packet_index,
                 source=ev.source,
             )
             # Build snapshot via blackboard's MaterializedState
             state = blackboard._new_materialized_state()
             state.project = copy.deepcopy(project) if project else None
             state.facts = copy.deepcopy(facts)
-            _collapse_indexes(state, idea_index, session_index)
+            _collapse_indexes(state, idea_index, session_index, packet_index)
             steps.append(ReplayStep(
                 step_index=i,
                 event=ev,
@@ -115,6 +121,7 @@ class ReplayEngine:
         facts: list[MemoryEntry] = []
         idea_index: dict[str, IdeaEntry] = {}
         session_index: dict[str, SolverSession] = {}
+        packet_index: dict[str, KnowledgePacket] = {}
 
         for i in range(step_index + 1):
             project = apply_event_to_state(
@@ -127,13 +134,14 @@ class ReplayEngine:
                 state_facts=facts,
                 idea_index=idea_index,
                 session_index=session_index,
+                packet_index=packet_index,
                 source=events[i].source,
             )
 
         state = blackboard._new_materialized_state()
         state.project = project
         state.facts = facts
-        return _collapse_indexes(state, idea_index, session_index)
+        return _collapse_indexes(state, idea_index, session_index, packet_index)
 
     def diff_runs(self, project_id_a: str, project_id_b: str,
                   blackboard_a: Any, blackboard_b: Any) -> RunDiffResult:

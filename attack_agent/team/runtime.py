@@ -17,7 +17,7 @@ from attack_agent.team.event_compat import is_genuine_candidate_flag
 from attack_agent.team.ideas import IdeaService
 from attack_agent.team.manager import ManagerConfig, TeamManager
 from attack_agent.team.memory import MemoryService
-from attack_agent.team.merge import MergeHub
+from attack_agent.team.merge import MergeHub, PacketRouteResult
 from attack_agent.team.observer import ObservationReport, Observer
 from attack_agent.team.policy import PolicyHarness
 from attack_agent.team.protocol import (
@@ -26,6 +26,7 @@ from attack_agent.team.protocol import (
     HumanDecisionChoice,
     IdeaEntry,
     IdeaStatus,
+    KnowledgePacket,
     MemoryEntry,
     MemoryKind,
     PolicyDecision,
@@ -44,6 +45,7 @@ from attack_agent.team.solver import SolverSessionConfig, SolverSessionManager
 from attack_agent.team.submission import SubmissionConfig, SubmissionVerifier, VerificationResult
 from attack_agent.team.tool_broker import ToolBroker, ToolRequest, ToolResult, ToolError
 from attack_agent.team.state_sync import StateSyncService, SyncConfig
+from attack_agent.team.memory_reducer import KnowledgePacketBuilder, MemoryReducer
 from attack_agent.runtime import PrimitiveRegistry
 from attack_agent.dispatcher import Dispatcher
 from attack_agent.enhanced_apg import EnhancedAPGPlanner
@@ -158,7 +160,7 @@ class TeamRuntime:
         )
         return self.scheduler.run_project(
             project.project_id, self.manager, self.blackboard, self,
-            self.context, self.policy, self.solver_manager,
+            self.context, self.policy, self.solver_manager, self.merge,
         )
 
     def run_all(self, challenge_ids: list[str]) -> dict[str, TeamProject]:
@@ -213,7 +215,7 @@ class TeamRuntime:
                 )
 
         # 3. Run all projects via SyncScheduler
-        results = self.scheduler.run_all(self.manager, self.blackboard, project_ids, self, self.context, self.policy, self.solver_manager)
+        results = self.scheduler.run_all(self.manager, self.blackboard, project_ids, self, self.context, self.policy, self.solver_manager, self.merge)
 
         # 4. Sync StateGraphService → Blackboard final state first (Phase K-3)
         for pid in project_ids:
@@ -826,6 +828,24 @@ class TeamRuntime:
     def list_available_primitives(self, profile: str = "") -> list[str]:
         """List primitives available to a given worker profile."""
         return self.tool_broker.list_available_primitives(profile)
+
+    # -- knowledge packets (L6) --
+
+    def publish_and_route_packets(self, project_id: str, solver_id: str) -> PacketRouteResult:
+        """Generate KnowledgePackets from recent execution results and route through MergeHub."""
+        events = self.blackboard.load_events(project_id)
+        reducer = MemoryReducer()
+        reduced = reducer.reduce_observations(events, project_id)
+        builder = KnowledgePacketBuilder()
+        packets = builder.build_packets(reduced, project_id, solver_id)
+        for pkt in packets:
+            self.blackboard.append_event(
+                project_id=project_id,
+                event_type=EventType.KNOWLEDGE_PACKET_PUBLISHED.value,
+                payload=to_dict(pkt),
+                source="team_runtime_l6",
+            )
+        return self.merge.process_incoming_packets(project_id, packets)
 
     # -- cleanup --
 

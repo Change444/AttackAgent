@@ -47,6 +47,7 @@ SOLVER_CONTEXT_LIMITS = {
     "max_recent_tool_outcomes": 3,
     "max_recent_event_ids": 20,
     "max_scratchpad_summary_chars": 500,
+    "max_inbox_items": 10,
 }
 
 
@@ -327,5 +328,17 @@ class ContextCompiler:
             }
             ctx.scratchpad_summary = solver_session.scratchpad_summary
             ctx.recent_event_ids = solver_session.recent_event_ids[-limits["max_recent_event_ids"]:]
+
+        # -- L6: inbox from routed/targeted KnowledgePackets --
+        inbox_items: list[dict] = []
+        for ev in reversed(events):
+            if ev.event_type == EventType.KNOWLEDGE_PACKET_MERGED.value:
+                pkt = ev.payload
+                recipients = pkt.get("suggested_recipients", [])
+                if ("all" in recipients) or (solver_id in recipients):
+                    inbox_items.append(pkt)
+                    if len(inbox_items) >= limits["max_inbox_items"]:
+                        break
+        ctx.inbox = inbox_items
 
         return ctx

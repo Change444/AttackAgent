@@ -40,6 +40,16 @@ This file defines working rules for future implementation agents. These are guid
 - A hypothesis without evidence is an idea, not a fact.
 - Facts require evidence references or a clear source event.
 
+## KnowledgePacket Rules
+
+- Solver sharing uses `KnowledgePacket`, not raw logs or full chat history.
+- All packets pass through MergeHub (validate → dedup → arbitrate → route) before entering Blackboard or Solver inbox.
+- Global accepted packets update Blackboard as OBSERVATION, CANDIDATE_FLAG, or ACTION_OUTCOME events.
+- Targeted packets enter Solver inbox via `KNOWLEDGE_PACKET_MERGED` events.
+- Conflicting packets produce `MergeDecision` entries visible in Blackboard, not silent overwrites.
+- Help requests use `suggested_recipients` with `"profile:X"` notation for profile-based routing.
+- Inbox is bounded by `SOLVER_CONTEXT_LIMITS["max_inbox_items"]`.
+
 ## Security Rules
 
 - AttackAgent is limited to authorized labs, CTFs, and controlled fixtures.
