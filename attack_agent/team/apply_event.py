@@ -149,7 +149,11 @@ def apply_event_to_state(
             project_id=project_id,
             profile=p.get("profile", "network"),
             status=SolverStatus(status_val),
+            active_idea_id=p.get("active_idea_id", ""),
+            local_memory_ids=p.get("local_memory_ids", []),
             budget_remaining=p.get("budget_remaining", 0.0),
+            scratchpad_summary=p.get("scratchpad_summary", ""),
+            recent_event_ids=p.get("recent_event_ids", []),
         )
         existing = session_index.get(solver_id)
         if existing is not None:
@@ -158,9 +162,11 @@ def apply_event_to_state(
                 project_id=project_id,
                 profile=p.get("profile", existing.profile),
                 status=SolverStatus(status_val),
-                active_idea_id=existing.active_idea_id,
-                local_memory_ids=existing.local_memory_ids,
+                active_idea_id=p.get("active_idea_id", existing.active_idea_id),
+                local_memory_ids=p.get("local_memory_ids", existing.local_memory_ids),
                 budget_remaining=p.get("budget_remaining", existing.budget_remaining),
+                scratchpad_summary=p.get("scratchpad_summary", existing.scratchpad_summary),
+                recent_event_ids=p.get("recent_event_ids", existing.recent_event_ids),
             )
         session_index[solver_id] = session
     elif et == EventType.WORKER_HEARTBEAT.value:
@@ -174,9 +180,11 @@ def apply_event_to_state(
                     project_id=existing.project_id,
                     profile=existing.profile,
                     status=SolverStatus(status_val),
-                    active_idea_id=existing.active_idea_id,
-                    local_memory_ids=existing.local_memory_ids,
-                    budget_remaining=existing.budget_remaining,
+                    active_idea_id=p.get("active_idea_id", existing.active_idea_id),
+                    local_memory_ids=p.get("local_memory_ids", existing.local_memory_ids),
+                    budget_remaining=p.get("budget_remaining", existing.budget_remaining),
+                    scratchpad_summary=p.get("scratchpad_summary", existing.scratchpad_summary),
+                    recent_event_ids=p.get("recent_event_ids", existing.recent_event_ids),
                 )
     elif et == EventType.WORKER_TIMEOUT.value:
         solver_id = p.get("solver_id", "")
@@ -192,6 +200,8 @@ def apply_event_to_state(
                     active_idea_id=existing.active_idea_id,
                     local_memory_ids=existing.local_memory_ids,
                     budget_remaining=existing.budget_remaining,
+                    scratchpad_summary=existing.scratchpad_summary,
+                    recent_event_ids=existing.recent_event_ids,
                 )
     elif et == EventType.ACTION_OUTCOME.value:
         solver_id = p.get("solver_id", "")
@@ -209,9 +219,11 @@ def apply_event_to_state(
                         project_id=existing.project_id,
                         profile=existing.profile,
                         status=solver_status,
-                        active_idea_id=existing.active_idea_id,
-                        local_memory_ids=existing.local_memory_ids,
-                        budget_remaining=existing.budget_remaining,
+                        active_idea_id=p.get("active_idea_id", existing.active_idea_id),
+                        local_memory_ids=p.get("local_memory_ids", existing.local_memory_ids),
+                        budget_remaining=p.get("budget_remaining", existing.budget_remaining),
+                        scratchpad_summary=p.get("scratchpad_summary", existing.scratchpad_summary),
+                        recent_event_ids=p.get("recent_event_ids", existing.recent_event_ids),
                     )
         raw_status = p.get("status", "")
         if raw_status != "ok":

@@ -9,18 +9,24 @@ Ported from CompetitionPlatform.solve_all() control flow.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from attack_agent.platform_models import EventType
 from attack_agent.team.blackboard import BlackboardService
 from attack_agent.team.event_compat import is_genuine_candidate_flag
 from attack_agent.team.manager import ManagerConfig, TeamManager
+from attack_agent.team.memory_reducer import MemoryReducer
 from attack_agent.team.protocol import (
     ActionType,
+    MemoryEntry,
+    MemoryKind,
+    ReviewRequest,
+    SolverStatus,
     StrategyAction,
     TeamProject,
     to_dict,
 )
+from attack_agent.team.review import HumanReviewGate
 
 if TYPE_CHECKING:
     from attack_agent.team.context import ContextCompiler
@@ -39,6 +45,50 @@ class SyncScheduler:
 
     def __init__(self, config: SchedulerConfig | None = None) -> None:
         self.config = config or SchedulerConfig()
+
+    def execute_strategy_action(
+        self,
+        action: StrategyAction,
+        project_id: str,
+        blackboard: BlackboardService,
+        runtime: TeamRuntime | None = None,
+        policy_harness: PolicyHarness | None = None,
+        review_gate: HumanReviewGate | None = None,
+    ) -> list[StrategyAction]:
+        """Execute a StrategyAction through the hard policy gate.
+
+        L3 hard gate: every action passes PolicyHarness.validate_action().
+        - deny/budget_exceeded/rate_limit → no record, no execution, return []
+        - needs_review → record action, create ReviewRequest with full payload
+          and causal_ref to action event, return without execution
+        - allow → record and execute the action
+        """
+        if policy_harness is not None:
+            policy_result = policy_harness.validate_action(action, project_id, blackboard)
+            if policy_result.decision.value in ("deny", "budget_exceeded", "rate_limit"):
+                return []
+            if policy_result.decision.value == "needs_review":
+                action.requires_review = True
+                action.policy_tags = action.policy_tags + ["needs_review"]
+                ev = _record_action(blackboard, action, return_event=True)
+                request = ReviewRequest(
+                    project_id=project_id,
+                    action_type=action.action_type.value,
+                    risk_level=action.risk_level,
+                    title=f"Review required: {action.action_type.value}",
+                    description=action.reason,
+                    proposed_action=str(action.action_type.value),
+                    proposed_action_payload=to_dict(action),
+                )
+                gate = review_gate or HumanReviewGate()
+                causal_ref = ev.event_id if ev is not None else None
+                gate.create_review(request, blackboard, causal_ref=causal_ref)
+                return [action]
+
+        # Policy allows (or no policy harness) — record only.
+        # Actual execution is handled by schedule_cycle() or callers.
+        _record_action(blackboard, action)
+        return [action]
 
     def schedule_cycle(
         self,
@@ -92,16 +142,19 @@ class SyncScheduler:
         if action is None:
             return []
 
-        # -- L2: soft policy gate --
-        if policy_harness is not None:
-            policy_result = policy_harness.validate_action(action, project_id, blackboard)
-            if policy_result.decision.value == "budget_exceeded":
-                return []
-            if policy_result.decision.value == "needs_review":
-                action.requires_review = True
-                action.policy_tags = action.policy_tags + ["needs_review"]
+        # -- L3: hard policy gate via execute_strategy_action --
+        gate_actions = self.execute_strategy_action(
+            action, project_id, blackboard, runtime, policy_harness,
+        )
+        if not gate_actions:
+            # policy denied/budget_exceeded/rate_limit — no action taken
+            return []
+        if action.requires_review:
+            # L3 hard gate: needs_review recorded but NOT executed
+            # Review approval will re-execute the action later
+            return gate_actions
 
-        _record_action(blackboard, action)
+        # Action was allowed by policy — check for follow-up converge/submit
 
         # Execute real solver cycle if runtime has executor capability
         if (
@@ -116,6 +169,48 @@ class SyncScheduler:
                     runtime.state_sync.sync_delta(
                         project_id, runtime._state_graph, blackboard
                     )
+
+                # -- L4: compile solver context and update session binding --
+                if context_compiler is not None:
+                    state_l4 = blackboard.rebuild_state(project_id)
+                    solver_id = ""
+                    for s in state_l4.sessions:
+                        if s.status in (SolverStatus.RUNNING, SolverStatus.ASSIGNED):
+                            solver_id = s.solver_id
+                            break
+                    if solver_id:
+                        solver_ctx = context_compiler.compile_solver_context(
+                            project_id, solver_id, blackboard
+                        )
+                        # Run memory reducer over recent events
+                        reducer = MemoryReducer()
+                        recent_events = blackboard.load_events(project_id)
+                        reduced = reducer.reduce_observations(recent_events, project_id)
+                        # Persist extracted credentials and endpoints
+                        for entry in reduced.credentials:
+                            runtime.memory.store_entry(project_id, entry)
+                        for entry in reduced.endpoints:
+                            runtime.memory.store_entry(project_id, entry)
+                        # Update SolverSession with L4 fields
+                        local_mem_ids = [m.entry_id for m in solver_ctx.local_memory[:5]]
+                        active_idea_id = solver_ctx.active_idea.idea_id if solver_ctx.active_idea else ""
+                        cost = result.get("cost", 0.0) or 0.0
+                        budget_remaining = max(0.0, s.budget_remaining - cost) if s else 0.0
+                        blackboard.append_event(
+                            project_id=project_id,
+                            event_type=EventType.WORKER_ASSIGNED.value,
+                            payload={
+                                "solver_id": solver_id,
+                                "profile": s.profile if s else "network",
+                                "status": SolverStatus.RUNNING.value,
+                                "budget_remaining": budget_remaining,
+                                "active_idea_id": active_idea_id,
+                                "local_memory_ids": local_mem_ids,
+                                "scratchpad_summary": reduced.scratchpad_summary,
+                                "recent_event_ids": reduced.event_ids_seen[-20:],
+                            },
+                            source="scheduler_l4",
+                        )
 
                 # After execution, re-evaluate state for converge/submit
                 events = blackboard.load_events(project_id)
@@ -135,14 +230,25 @@ class SyncScheduler:
                             project_id, _infer_stage(events, state.project.status), events
                         )
                     if follow_up is not None:
-                        _record_action(blackboard, follow_up)
+                        follow_up_gate = self.execute_strategy_action(
+                            follow_up, project_id, blackboard, runtime,
+                            policy_harness,
+                        )
+                        if not follow_up_gate:
+                            return [action]
+                        if follow_up.requires_review:
+                            return [action, follow_up]
                         if follow_up.action_type == ActionType.CONVERGE:
                             if follow_up_ctx is not None:
                                 submit_action = manager.decide_submit_from_context(follow_up_ctx)
                             else:
                                 submit_action = manager.decide_submit(project_id, events)
-                            _record_action(blackboard, submit_action)
-                            _execute_submit_if_possible(runtime, project_id, submit_action, blackboard)
+                            submit_gate = self.execute_strategy_action(
+                                submit_action, project_id, blackboard, runtime,
+                                policy_harness,
+                            )
+                            if submit_gate and not submit_action.requires_review:
+                                _execute_submit_if_possible(runtime, project_id, submit_action, blackboard)
                             return [action, follow_up, submit_action]
                         return [action, follow_up]
                 return [action]
@@ -153,8 +259,11 @@ class SyncScheduler:
                 submit_action = manager.decide_submit_from_context(ctx)
             else:
                 submit_action = manager.decide_submit(project_id, events)
-            _record_action(blackboard, submit_action)
-            _execute_submit_if_possible(runtime, project_id, submit_action, blackboard)
+            submit_gate = self.execute_strategy_action(
+                submit_action, project_id, blackboard, runtime, policy_harness,
+            )
+            if submit_gate and not submit_action.requires_review:
+                _execute_submit_if_possible(runtime, project_id, submit_action, blackboard)
             return [action, submit_action]
 
         return [action]
@@ -285,17 +394,22 @@ def _infer_stage(events: list, project_status: str) -> str:
 
 
 def _record_action(
-    blackboard: BlackboardService, action: StrategyAction
-) -> None:
-    """Write a StrategyAction decision to the Blackboard event journal."""
+    blackboard: BlackboardService, action: StrategyAction,
+    return_event: bool = False,
+) -> Any | None:
+    """Write a StrategyAction decision to the Blackboard event journal.
+    Returns the BlackboardEvent if return_event=True (for causal_ref extraction)."""
     payload = to_dict(action)
     event_type = _action_to_event_type(action.action_type)
-    blackboard.append_event(
+    ev = blackboard.append_event(
         action.project_id,
         event_type,
         payload,
         source="manager",
     )
+    if return_event:
+        return ev
+    return None
 
 
 def _action_to_event_type(action_type: ActionType) -> str:
@@ -317,10 +431,14 @@ def _execute_submit_if_possible(
     submit_action: StrategyAction,
     blackboard: BlackboardService,
 ) -> None:
-    """Execute real flag submission via runtime.submit_flag() if possible."""
+    """Execute real flag submission via runtime.submit_flag() if possible.
+    L3 hard gate: do NOT execute if action requires_review."""
     if runtime is None or not runtime.use_real_executor:
         return
     if submit_action.action_type != ActionType.SUBMIT_FLAG:
+        return
+    # L3: requires_review means submission is waiting for review approval
+    if submit_action.requires_review:
         return
 
     state_graph = runtime._state_graph

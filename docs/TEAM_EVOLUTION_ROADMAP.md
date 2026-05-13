@@ -121,6 +121,8 @@ Acceptance tests:
 
 ## 6. Phase L3 - Policy and Review Become Execution Gates
 
+Status: complete
+
 Goal: no Manager action executes without policy validation and review handling.
 
 Implementation plan:
@@ -146,6 +148,8 @@ Acceptance tests:
 - A review decision appears in replay with causal linkage to the original action.
 
 ## 7. Phase L4 - Memory Drives Solver Continuity
+
+Status: complete
 
 Goal: each Solver receives a compact, structured, continuous context instead of relying on isolated task calls.
 

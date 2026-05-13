@@ -522,7 +522,8 @@ class TeamRuntime:
     # -- submission --
 
     def submit_flag(
-        self, project_id: str, flag_value: str, idea_id: str = ""
+        self, project_id: str, flag_value: str, idea_id: str = "",
+        risk_level: str = "high",
     ) -> SubmissionResult:
         """Verify → policy → review → submit pipeline."""
         submit_config = SubmissionConfig(
@@ -544,7 +545,7 @@ class TeamRuntime:
             action_type=ActionType.SUBMIT_FLAG,
             project_id=project_id,
             target_idea_id=idea_id,
-            risk_level="medium",
+            risk_level=risk_level,
             reason=f"submit flag: {flag_value}",
         )
         policy_decision: PolicyDecision = self.policy.validate_action(
@@ -556,10 +557,11 @@ class TeamRuntime:
             request = ReviewRequest(
                 project_id=project_id,
                 action_type="submit_flag",
-                risk_level="medium",
+                risk_level=risk_level,
                 title=f"Submit flag for {project_id}",
                 description=f"Flag value: {flag_value}",
                 proposed_action=f"submit {flag_value}",
+                proposed_action_payload=to_dict(action),
             )
             self.review_gate.create_review(request, self.blackboard)
             review_created = True
@@ -624,16 +626,108 @@ class TeamRuntime:
         decided_by: str = "cli_user",
         project_id: str = "",
     ) -> ReviewRequest | None:
-        """Resolve a review request with a human decision."""
+        """Resolve a review request with a human decision.
+
+        L3: on approval, re-execute the original StrategyAction stored
+        in the ReviewRequest.proposed_action_payload exactly once.
+        On rejection, no execution occurs (HumanReviewGate records
+        a FAILURE_BOUNDARY automatically).
+        """
+        # Check for existing "review_consumed" event — prevents double execution
+        if decision == HumanDecisionChoice.APPROVED and project_id:
+            events = self.blackboard.load_events(project_id)
+            for ev in events:
+                if ev.event_type == EventType.SECURITY_VALIDATION.value:
+                    p = ev.payload
+                    if p.get("review_id") == request_id and p.get("outcome") == "review_consumed":
+                        # Already consumed — resolve without re-execution
+                        human_decision = HumanDecision(
+                            request_id=request_id,
+                            decision=decision,
+                            decided_by=decided_by,
+                            reason=reason,
+                        )
+                        return self.review_gate.resolve_review(
+                            request_id, human_decision, self.blackboard, project_id
+                        )
+
         human_decision = HumanDecision(
             request_id=request_id,
             decision=decision,
             decided_by=decided_by,
             reason=reason,
         )
-        return self.review_gate.resolve_review(
+        review = self.review_gate.resolve_review(
             request_id, human_decision, self.blackboard, project_id
         )
+
+        if review is not None and decision == HumanDecisionChoice.APPROVED:
+            action_payload = review.proposed_action_payload
+            if action_payload:
+                from attack_agent.team.protocol import from_dict
+                action = from_dict(StrategyAction, action_payload)
+                self._execute_approved_action(action, project_id, request_id)
+
+        return review
+
+    def _execute_approved_action(
+        self, action: StrategyAction, project_id: str, review_id: str,
+    ) -> None:
+        """Re-execute a StrategyAction after review approval.
+
+        Records the action in Blackboard with causal_ref pointing to the
+        review that approved it, then executes if applicable.
+        Writes a review_consumed event to prevent double-execution.
+        """
+        # Record the re-executed action with causal linkage
+        event_type = self._action_type_to_event_type(action.action_type)
+        self.blackboard.append_event(
+            project_id=project_id,
+            event_type=event_type,
+            payload=to_dict(action),
+            source="review_executor",
+            causal_ref=review_id,
+        )
+
+        # Execute the action if it requires real execution
+        if action.action_type == ActionType.SUBMIT_FLAG:
+            if self._state_graph is not None:
+                record = self._state_graph.projects.get(project_id)
+                if record is not None and record.candidate_flags:
+                    dk, candidate = next(iter(record.candidate_flags.items()))
+                    self.submit_flag(project_id, candidate.value,
+                                    idea_id=dk, risk_level=action.risk_level)
+        elif action.action_type in (ActionType.LAUNCH_SOLVER, ActionType.STEER_SOLVER):
+            if self.use_real_executor:
+                result = self._execute_solver_cycle(project_id)
+                if result is not None and self.state_sync is not None and self._state_graph is not None:
+                    self.state_sync.sync_delta(project_id, self._state_graph, self.blackboard)
+
+        # Mark review as consumed — prevents double-execution
+        self.blackboard.append_event(
+            project_id=project_id,
+            event_type=EventType.SECURITY_VALIDATION.value,
+            payload={
+                "review_id": review_id,
+                "outcome": "review_consumed",
+                "action_re_executed": action.action_type.value,
+            },
+            source="review_executor",
+            causal_ref=review_id,
+        )
+
+    @staticmethod
+    def _action_type_to_event_type(action_type: ActionType) -> str:
+        from attack_agent.platform_models import EventType as ET
+        mapping = {
+            ActionType.LAUNCH_SOLVER: ET.WORKER_ASSIGNED.value,
+            ActionType.STEER_SOLVER: ET.REQUEUE.value,
+            ActionType.SUBMIT_FLAG: ET.SUBMISSION.value,
+            ActionType.CONVERGE: ET.STRATEGY_ACTION.value,
+            ActionType.ABANDON: ET.PROJECT_ABANDONED.value,
+            ActionType.STOP_SOLVER: ET.WORKER_TIMEOUT.value,
+        }
+        return mapping.get(action_type, ET.REQUEUE.value)
 
     # -- observation --
 

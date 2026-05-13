@@ -31,6 +31,7 @@ class HumanReviewGate:
         self,
         request: ReviewRequest,
         blackboard: BlackboardService,
+        causal_ref: str | None = None,
     ) -> ReviewRequest:
         """Create a ReviewRequest and write it to Blackboard."""
         blackboard.append_event(
@@ -43,12 +44,14 @@ class HumanReviewGate:
                 "title": request.title,
                 "description": request.description,
                 "proposed_action": request.proposed_action,
+                "proposed_action_payload": request.proposed_action_payload,
                 "alternatives": request.alternatives,
                 "timeout_policy": request.timeout_policy,
                 "status": ReviewStatus.PENDING.value,
                 "outcome": "needs_review",
             },
             source="human_review_gate",
+            causal_ref=causal_ref,
         )
         return request
 
@@ -210,6 +213,7 @@ class HumanReviewGate:
                 title=p.get("title", ""),
                 description=p.get("description", ""),
                 proposed_action=p.get("proposed_action", ""),
+                proposed_action_payload=p.get("proposed_action_payload", {}),
                 alternatives=p.get("alternatives", []),
                 timeout_policy=p.get("timeout_policy", "auto_reject"),
                 status=status,

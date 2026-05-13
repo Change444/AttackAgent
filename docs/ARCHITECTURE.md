@@ -106,14 +106,9 @@ Required direction:
 
 ### 4.2 Memory Gap
 
-Memory services exist, but memory is not yet the substrate of solving. Current planning still mainly depends on `StateGraphService`, `ProjectRecord`, and legacy planner state.
+Status: **L4 resolved** — SolverContextPack now carries facts, credentials, endpoints, failure boundaries, recent tool outcomes, budget constraints, scratchpad summary, and recent event IDs. MemoryReducer extracts structured memory from tool outcomes. `is_boundary_repetition` prevents immediate repetition of failed approaches. All lists bounded by SOLVER_CONTEXT_LIMITS.
 
-Required direction:
-
-- Split event semantics for facts, ideas, candidate flags, strategy actions, and reviews.
-- Build a real `ContextPack` for each Solver turn.
-- Inject high-value facts, active idea, failure boundaries, credentials, endpoints, and inbox messages into Solver planning.
-- Convert failed approaches into `FailureBoundary` and use them to block repetition.
+Remaining gap: SolverContextPack is compiled in the production scheduling path (after `_execute_solver_cycle`), but SolverSession does not yet have full long-lived ownership (L5). Inbox remains empty until L6 (KnowledgePacket).
 
 ### 4.3 Collaboration Gap
 

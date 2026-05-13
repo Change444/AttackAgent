@@ -35,6 +35,22 @@ from attack_agent.team.protocol import (
 
 
 # ---------------------------------------------------------------------------
+# Context pack limits (L4 bounding)
+# ---------------------------------------------------------------------------
+
+SOLVER_CONTEXT_LIMITS = {
+    "max_local_memory": 5,
+    "max_global_facts": 10,
+    "max_credentials": 5,
+    "max_endpoints": 5,
+    "max_failure_boundaries": 10,
+    "max_recent_tool_outcomes": 3,
+    "max_recent_event_ids": 20,
+    "max_scratchpad_summary_chars": 500,
+}
+
+
+# ---------------------------------------------------------------------------
 # ContextPack dataclasses
 # ---------------------------------------------------------------------------
 
@@ -60,7 +76,12 @@ class ManagerContext:
 
 @dataclass
 class SolverContextPack:
-    """Local context for a Solver session."""
+    """Local context for a Solver session.
+
+    L4: expanded to include credentials, endpoints, recent tool outcomes,
+    budget constraints, scratchpad summary, and recent event IDs.
+    All lists are bounded by SOLVER_CONTEXT_LIMITS.
+    """
 
     profile: str = ""
     active_idea: IdeaEntry | None = None
@@ -70,6 +91,28 @@ class SolverContextPack:
     failure_boundaries: list[FailureBoundary] = field(default_factory=list)
     solver_id: str = ""
     project_id: str = ""
+    credentials: list[MemoryEntry] = field(default_factory=list)
+    endpoints: list[MemoryEntry] = field(default_factory=list)
+    recent_tool_outcomes: list[dict] = field(default_factory=list)
+    budget_constraints: dict = field(default_factory=dict)
+    scratchpad_summary: str = ""
+    recent_event_ids: list[str] = field(default_factory=list)
+
+    def is_boundary_repetition(self, proposed_action: str) -> bool:
+        """Check if a proposed action matches a known failure boundary.
+
+        Uses word overlap: if significant words from the proposed action
+        appear in a failure boundary description (or vice versa),
+        it is considered a repetition.
+        """
+        action_words = set(w for w in proposed_action.lower().split() if len(w) > 2)
+        for fb in self.failure_boundaries:
+            boundary_words = set(w for w in fb.description.lower().split() if len(w) > 2)
+            overlap = action_words & boundary_words
+            # Repetition if at least half of the meaningful words overlap
+            if overlap and len(overlap) >= max(1, len(action_words) // 2):
+                return True
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -208,35 +251,81 @@ class ContextCompiler:
         solver_id: str,
         blackboard: BlackboardService,
     ) -> SolverContextPack:
-        """Compile Solver local context from Blackboard + services."""
+        """Compile Solver local context from Blackboard + services.
+
+        L4: populates credentials, endpoints, recent_tool_outcomes,
+        budget_constraints, scratchpad_summary, recent_event_ids.
+        All lists bounded by SOLVER_CONTEXT_LIMITS.
+        """
         ctx = SolverContextPack(
             solver_id=solver_id,
             project_id=project_id,
         )
+        limits = SOLVER_CONTEXT_LIMITS
 
-        # find the solver's profile
+        # find the solver's profile and session data
         sessions = blackboard.list_sessions(project_id)
+        solver_session = None
         for s in sessions:
             if s.solver_id == solver_id:
                 ctx.profile = s.profile
+                solver_session = s
                 break
 
         # local memory: recent facts
         if self.memory_service is not None:
             ctx.local_memory = self.memory_service.query_by_kind(
-                project_id, MemoryKind.FACT, limit=5,
+                project_id, MemoryKind.FACT, limit=limits["max_local_memory"],
             )
             ctx.failure_boundaries = self.memory_service.get_failure_boundaries(
                 project_id
             )
             ctx.global_facts = self.memory_service.query_by_confidence(
-                project_id, 0.7, limit=10,
+                project_id, 0.7, limit=limits["max_global_facts"],
             )
+
+            # -- L4: credentials (deduped) --
+            ctx.credentials = self.memory_service.get_deduped_entries(
+                project_id, MemoryKind.CREDENTIAL, limit=limits["max_credentials"],
+            )
+
+            # -- L4: endpoints (deduped) --
+            ctx.endpoints = self.memory_service.get_deduped_entries(
+                project_id, MemoryKind.ENDPOINT, limit=limits["max_endpoints"],
+            )
+
+        # Bound failure_boundaries
+        ctx.failure_boundaries = ctx.failure_boundaries[:limits["max_failure_boundaries"]]
+        ctx.global_facts = ctx.global_facts[:limits["max_global_facts"]]
 
         # active idea: best unclaimed
         if self.idea_service is not None:
             ctx.active_idea = self.idea_service.get_best_unclaimed(
                 project_id
             )
+
+        # -- L4: recent tool outcomes (last N ACTION_OUTCOME events) --
+        events = blackboard.load_events(project_id)
+        tool_outcomes = []
+        for ev in reversed(events):
+            if ev.event_type == EventType.ACTION_OUTCOME.value:
+                tool_outcomes.append({
+                    "status": ev.payload.get("status", ""),
+                    "primitive": ev.payload.get("primitive_name", ""),
+                    "cost": ev.payload.get("cost", 0.0),
+                    "novelty": ev.payload.get("novelty", 0.0),
+                    "failure_reason": ev.payload.get("failure_reason", ""),
+                })
+                if len(tool_outcomes) >= limits["max_recent_tool_outcomes"]:
+                    break
+        ctx.recent_tool_outcomes = tool_outcomes
+
+        # -- L4: budget constraints and session fields from SolverSession --
+        if solver_session is not None:
+            ctx.budget_constraints = {
+                "budget_remaining": solver_session.budget_remaining,
+            }
+            ctx.scratchpad_summary = solver_session.scratchpad_summary
+            ctx.recent_event_ids = solver_session.recent_event_ids[-limits["max_recent_event_ids"]:]
 
         return ctx

@@ -233,6 +233,13 @@ class TestContextPackGolden(unittest.TestCase):
         self.assertIsInstance(ctx.inbox, list)
         self.assertEqual(ctx.solver_id, "s1")
         self.assertEqual(ctx.project_id, "p1")
+        # L4 new fields
+        self.assertIsInstance(ctx.credentials, list)
+        self.assertIsInstance(ctx.endpoints, list)
+        self.assertIsInstance(ctx.recent_tool_outcomes, list)
+        self.assertIsInstance(ctx.budget_constraints, dict)
+        self.assertIsInstance(ctx.scratchpad_summary, str)
+        self.assertIsInstance(ctx.recent_event_ids, list)
 
 
 class TestL2ManagerContextExpansion(unittest.TestCase):

@@ -11,6 +11,16 @@ This file defines working rules for future implementation agents. These are guid
 - Add tests proportional to risk. Architecture migrations need integration tests, not only dataclass tests.
 - Do not fake successful tool execution. Missing configuration or unsupported capabilities must fail cleanly.
 
+## Test Performance Rules
+
+- Every individual test method must complete in under 2 seconds.
+- The full test suite must complete in under 60 seconds.
+- No real network timeouts above 1 second in tests. Use `stdlib` engine with `timeout_seconds <= 0.5` via `fast_test_config()`.
+- No `sleep()` calls in tests. Use event-driven waits or reduce cycle counts instead.
+- Tests that run `solve_all()` must use the minimum cycle count needed to verify the assertion. "Fails cleanly" tests typically need only 1 cycle; "solves successfully" tests need 2-3.
+- Do not use `config/settings.json` (production config with 30s/10s timeouts) in tests. Use a fast test config dict written to a temp file instead.
+- Playwright browser tests are exempt from the 2s-per-method rule due to browser startup cost, but must share a browser instance across the test class via `setUpClass`/`tearDownClass`.
+
 ## Team Runtime Rules
 
 - `TeamRuntime` is the public entry point.

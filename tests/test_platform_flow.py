@@ -28,11 +28,12 @@ from attack_agent.team.runtime import TeamRuntime
 
 
 FAST_SOLVE_CYCLES = 3
+FAST_FAIL_CYCLES = 1
 
 
-def fast_test_config() -> AttackAgentConfig:
+def fast_test_config(cycles: int = FAST_SOLVE_CYCLES) -> AttackAgentConfig:
     return AttackAgentConfig(
-        platform=PlatformConfig(max_cycles=3, stagnation_threshold=3),
+        platform=PlatformConfig(max_cycles=cycles, stagnation_threshold=3),
         dual_path=DualPathConfig(path_switch_stagnation_threshold=2),
         pattern_discovery=PatternDiscoveryConfig(),
         semantic_retrieval=SemanticRetrievalConfig(),
@@ -45,7 +46,7 @@ def fast_test_config() -> AttackAgentConfig:
     )
 
 
-def build_identity_runtime(flag_confidence: float = 0.97) -> TeamRuntime:
+def build_identity_runtime(flag_confidence: float = 0.97, cycles: int = FAST_SOLVE_CYCLES) -> TeamRuntime:
     provider = InMemoryCompetitionProvider(
         [
             ChallengeDefinition(
@@ -111,10 +112,10 @@ def build_identity_runtime(flag_confidence: float = 0.97) -> TeamRuntime:
             )
         ]
     )
-    return build_team_runtime(provider, agent_config=fast_test_config())
+    return build_team_runtime(provider, agent_config=fast_test_config(cycles))
 
 
-def build_browser_runtime() -> TeamRuntime:
+def build_browser_runtime(cycles: int = FAST_SOLVE_CYCLES) -> TeamRuntime:
     provider = InMemoryCompetitionProvider(
         [
             ChallengeDefinition(
@@ -154,10 +155,10 @@ def build_browser_runtime() -> TeamRuntime:
             )
         ]
     )
-    return build_team_runtime(provider, agent_config=fast_test_config())
+    return build_team_runtime(provider, agent_config=fast_test_config(cycles))
 
 
-def build_artifact_runtime() -> TeamRuntime:
+def build_artifact_runtime(cycles: int = FAST_SOLVE_CYCLES) -> TeamRuntime:
     provider = InMemoryCompetitionProvider(
         [
             ChallengeDefinition(
@@ -188,10 +189,10 @@ def build_artifact_runtime() -> TeamRuntime:
             )
         ]
     )
-    return build_team_runtime(provider, agent_config=fast_test_config())
+    return build_team_runtime(provider, agent_config=fast_test_config(cycles))
 
 
-def build_binary_runtime() -> TeamRuntime:
+def build_binary_runtime(cycles: int = FAST_SOLVE_CYCLES) -> TeamRuntime:
     provider = InMemoryCompetitionProvider(
         [
             ChallengeDefinition(
@@ -222,7 +223,7 @@ def build_binary_runtime() -> TeamRuntime:
             )
         ]
     )
-    return build_team_runtime(provider, agent_config=fast_test_config())
+    return build_team_runtime(provider, agent_config=fast_test_config(cycles))
 
 
 def build_real_http_runtime(target: str) -> TeamRuntime:
@@ -541,7 +542,7 @@ class PlatformFlowTests(unittest.TestCase):
 
     def test_identity_pattern_without_real_target_fails_cleanly(self) -> None:
         """Without a real target, identity/http flow fails cleanly instead of faking metadata."""
-        runtime = build_identity_runtime()
+        runtime = build_identity_runtime(cycles=FAST_FAIL_CYCLES)
         runtime.solve_all()
         record = runtime._state_graph.projects["project:web-auth"]
         self.assertNotEqual(ProjectStage.DONE, record.snapshot.stage)
@@ -549,7 +550,7 @@ class PlatformFlowTests(unittest.TestCase):
 
     def test_browser_pattern_without_real_target_fails_cleanly(self) -> None:
         """Without a real browser target, platform runs but cannot solve via fake metadata."""
-        runtime = build_browser_runtime()
+        runtime = build_browser_runtime(cycles=FAST_FAIL_CYCLES)
         runtime.solve_all()
         record = runtime._state_graph.projects["project:web-render"]
         # System no longer fakes candidate flags from primitive_payloads
@@ -557,7 +558,7 @@ class PlatformFlowTests(unittest.TestCase):
 
     def test_artifact_pattern_without_real_target_fails_cleanly(self) -> None:
         """Without a real artifact target, artifact pattern cannot solve via fake metadata."""
-        runtime = build_artifact_runtime()
+        runtime = build_artifact_runtime(cycles=FAST_FAIL_CYCLES)
         runtime.solve_all()
         record = runtime._state_graph.projects["project:misc-file"]
         # System no longer fakes solving through primitive_payloads
@@ -565,7 +566,7 @@ class PlatformFlowTests(unittest.TestCase):
 
     def test_binary_pattern_without_real_target_fails_cleanly(self) -> None:
         """Without a real binary target, binary pattern cannot solve via fake metadata."""
-        runtime = build_binary_runtime()
+        runtime = build_binary_runtime(cycles=FAST_FAIL_CYCLES)
         runtime.solve_all()
         record = runtime._state_graph.projects["project:rev-1"]
         # System no longer fakes solving through primitive_payloads
@@ -599,7 +600,7 @@ class PlatformFlowTests(unittest.TestCase):
         self.assertIn("requeue", event_types)
 
     def test_console_view_renders_project_outputs(self) -> None:
-        runtime = build_identity_runtime()
+        runtime = build_identity_runtime(cycles=FAST_FAIL_CYCLES)
         runtime.solve_all()
         console = WebConsoleView(runtime._state_graph)
         summary = console.render_text()

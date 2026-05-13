@@ -196,6 +196,8 @@ class SolverSession:
     active_idea_id: str = ""
     local_memory_ids: list[str] = field(default_factory=list)
     budget_remaining: float = 0.0
+    scratchpad_summary: str = ""
+    recent_event_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -249,6 +251,7 @@ class ReviewRequest:
     description: str = ""
     evidence_refs: list[str] = field(default_factory=list)
     proposed_action: str = ""
+    proposed_action_payload: dict[str, Any] = field(default_factory=dict)
     alternatives: list[str] = field(default_factory=list)
     timeout_policy: str = "auto_reject"
     status: ReviewStatus = ReviewStatus.PENDING
