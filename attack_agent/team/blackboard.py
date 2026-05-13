@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -68,6 +69,7 @@ class BlackboardService:
         self.config = config or BlackboardConfig()
         self._db: sqlite3.Connection | None = None
         self._ensure_db()
+        self._lock = threading.Lock()
 
     # -- lifecycle --
 
@@ -109,8 +111,9 @@ class BlackboardService:
         """Remove all events for a project — used before fresh run."""
         if self._db is None:
             return
-        self._db.execute("DELETE FROM events WHERE project_id = ?", (project_id,))
-        self._db.commit()
+        with self._lock:
+            self._db.execute("DELETE FROM events WHERE project_id = ?", (project_id,))
+            self._db.commit()
 
     # -- write --
 
@@ -129,35 +132,96 @@ class BlackboardService:
             source=source,
             causal_ref=causal_ref,
         )
-        self._db.execute(
-            """
-            INSERT INTO events (event_id, project_id, event_type, payload, source, timestamp, causal_ref)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                ev.event_id,
-                ev.project_id,
-                ev.event_type,
-                json.dumps(ev.payload, ensure_ascii=False),
-                ev.source,
-                ev.timestamp,
-                ev.causal_ref,
-            ),
-        )
-        self._db.commit()
+        with self._lock:
+            self._db.execute(
+                """
+                INSERT INTO events (event_id, project_id, event_type, payload, source, timestamp, causal_ref)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    ev.event_id,
+                    ev.project_id,
+                    ev.event_type,
+                    json.dumps(ev.payload, ensure_ascii=False),
+                    ev.source,
+                    ev.timestamp,
+                    ev.causal_ref,
+                ),
+            )
+            self._db.commit()
         return ev
 
     # -- read --
 
     def load_events(self, project_id: str) -> list[BlackboardEvent]:
-        rows = self._db.execute(
-            """
-            SELECT event_id, project_id, event_type, payload, source, timestamp, causal_ref
-            FROM events WHERE project_id = ? ORDER BY timestamp
-            """,
-            (project_id,),
-        ).fetchall()
-        return [self._row_to_event(r) for r in rows]
+        with self._lock:
+            rows = self._db.execute(
+                """
+                SELECT event_id, project_id, event_type, payload, source, timestamp, causal_ref
+                FROM events WHERE project_id = ? ORDER BY timestamp
+                """,
+                (project_id,),
+            ).fetchall()
+            return [self._row_to_event(r) for r in rows]
+
+    def load_events_after(self, project_id: str, after_event_id: str = "") -> list[BlackboardEvent]:
+        """Load events for a project newer than the given event_id.
+
+        If after_event_id is empty, returns all events.
+        Used for SSE streaming: client sends Last-Event-ID, server returns newer events.
+        """
+        if not after_event_id:
+            return self.load_events(project_id)
+        with self._lock:
+            row = self._db.execute(
+                "SELECT timestamp FROM events WHERE event_id = ?",
+                (after_event_id,),
+            ).fetchone()
+            if row is None:
+                return self.load_events(project_id)
+            rows = self._db.execute(
+                """
+                SELECT event_id, project_id, event_type, payload, source, timestamp, causal_ref
+                FROM events WHERE project_id = ? AND timestamp > ? ORDER BY timestamp
+                """,
+                (project_id, row["timestamp"]),
+            ).fetchall()
+            return [self._row_to_event(r) for r in rows]
+
+    def load_all_events_after(self, after_event_id: str = "") -> list[BlackboardEvent]:
+        """Load events across ALL projects newer than the given event_id.
+
+        Used for global SSE stream (no project filter).
+        """
+        with self._lock:
+            if not after_event_id:
+                rows = self._db.execute(
+                    """
+                    SELECT event_id, project_id, event_type, payload, source, timestamp, causal_ref
+                    FROM events ORDER BY timestamp
+                    """,
+                ).fetchall()
+                return [self._row_to_event(r) for r in rows]
+            row = self._db.execute(
+                "SELECT timestamp FROM events WHERE event_id = ?",
+                (after_event_id,),
+            ).fetchone()
+            if row is None:
+                rows = self._db.execute(
+                    """
+                    SELECT event_id, project_id, event_type, payload, source, timestamp, causal_ref
+                    FROM events ORDER BY timestamp
+                    """,
+                ).fetchall()
+                return [self._row_to_event(r) for r in rows]
+            rows = self._db.execute(
+                """
+                SELECT event_id, project_id, event_type, payload, source, timestamp, causal_ref
+                FROM events WHERE timestamp > ? ORDER BY timestamp
+                """,
+                (row["timestamp"],),
+            ).fetchall()
+            return [self._row_to_event(r) for r in rows]
 
     # -- rebuild --
 

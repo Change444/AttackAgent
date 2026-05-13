@@ -8,6 +8,7 @@ Ported from CompetitionPlatform.solve_all() control flow.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -402,11 +403,20 @@ class SyncScheduler:
         solver_manager: SolverSessionManager | None = None,
         merge_hub: MergeHub | None = None,
         observer: Observer | None = None,
+        pause_event: threading.Event | None = None,
     ) -> TeamProject:
         """Run a project until done / abandoned.
 
         Loops schedule_cycle up to max_cycles times.
+        L9: if pause_event is provided, checks it between cycles.
+        When paused, blocks on pause_event.wait() until resumed.
         """
+        for _ in range(self.config.max_cycles):
+            # -- L9: pause check between cycles --
+            if pause_event is not None and pause_event.is_set():
+                pause_event.wait(timeout=1.0)
+                if pause_event.is_set():
+                    continue
         for _ in range(self.config.max_cycles):
             state = blackboard.rebuild_state(project_id)
             if state.project is None:

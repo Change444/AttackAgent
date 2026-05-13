@@ -6,7 +6,9 @@ CLI and API consume this class exclusively.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
+from typing import Any
 
 from attack_agent.config import BrowserConfig, HttpConfig
 from attack_agent.platform_models import EventType
@@ -159,6 +161,10 @@ class TeamRuntime:
         self._controller: Any | None = None
         self._provider: Any | None = None
 
+        # L9: project lifecycle controls (pause/resume/background threads)
+        self._pause_events: dict[str, threading.Event] = {}
+        self._project_threads: dict[str, threading.Thread] = {}
+
     # -- project lifecycle --
 
     def run_project(self, challenge_id: str) -> TeamProject:
@@ -184,6 +190,80 @@ class TeamRuntime:
             proj = self.run_project(cid)
             projects[cid] = proj
         return projects
+
+    # -- L9: project lifecycle controls --
+
+    def start_project(self, challenge_id: str) -> str:
+        """Start project execution in a background thread, return project_id.
+
+        Creates a pause control Event (initially not paused) and launches
+        the scheduler in a daemon thread. The scheduler checks the pause
+        event between each cycle iteration.
+        """
+        project = TeamProject(challenge_id=challenge_id, status="new")
+        self.manager.admit_project(project)
+        self.blackboard.append_event(
+            project_id=project.project_id,
+            event_type="project_upserted",
+            payload=to_dict(project),
+            source="team_runtime",
+        )
+        pause_event = threading.Event()
+        self._pause_events[project.project_id] = pause_event
+
+        def _run_in_thread():
+            self.scheduler.run_project(
+                project.project_id, self.manager, self.blackboard, self,
+                self.context, self.policy, self.solver_manager, self.merge,
+                self.observer, pause_event=pause_event,
+            )
+
+        thread = threading.Thread(target=_run_in_thread, daemon=True)
+        self._project_threads[project.project_id] = thread
+        thread.start()
+        return project.project_id
+
+    def pause_project(self, project_id: str) -> bool:
+        """Pause a running project. Returns True if project was running."""
+        pause_event = self._pause_events.get(project_id)
+        if pause_event is None:
+            return False
+        if pause_event.is_set():
+            return False  # already paused
+        pause_event.set()
+        state = self.blackboard.rebuild_state(project_id)
+        if state.project is not None:
+            self.blackboard.append_event(
+                project_id=project_id,
+                event_type="project_upserted",
+                payload={
+                    "challenge_id": state.project.challenge_id,
+                    "status": "paused",
+                },
+                source="team_runtime_pause",
+            )
+        return True
+
+    def resume_project(self, project_id: str) -> bool:
+        """Resume a paused project. Returns True if project was paused."""
+        pause_event = self._pause_events.get(project_id)
+        if pause_event is None:
+            return False
+        if not pause_event.is_set():
+            return False  # not paused
+        pause_event.clear()
+        state = self.blackboard.rebuild_state(project_id)
+        if state.project is not None:
+            self.blackboard.append_event(
+                project_id=project_id,
+                event_type="project_upserted",
+                payload={
+                    "challenge_id": state.project.challenge_id,
+                    "status": "running",
+                },
+                source="team_runtime_resume",
+            )
+        return True
 
     def solve_all(self) -> dict[str, TeamProject]:
         """Bootstrap challenges via Controller and run all projects.

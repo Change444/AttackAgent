@@ -290,6 +290,8 @@ Acceptance tests:
 
 ## 12. Phase L9 - API Event Stream and Web UI Foundation
 
+Status: complete
+
 Goal: prepare for GUI/Web UI without coupling UI to internals.
 
 Implementation plan:
@@ -323,6 +325,8 @@ Acceptance tests:
 - Replay endpoint explains the key decisions.
 
 ## 13. Phase L10 - Web UI / GUI Console
+
+Status: in progress
 
 Goal: expose the team runtime as an operable product.
 

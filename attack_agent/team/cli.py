@@ -388,6 +388,12 @@ def tools_cmd(profile: str):
 
     console.print(table)
     runtime.close()
+
+
+@team.command("serve")
+@click.option("--port", "-p", default=8000, help="Port for API server")
+@click.option("--config", "-c", default="config/team_settings.json", help="TeamRuntimeConfig JSON path")
+def serve(port: int, config: str):
     """Start the FastAPI API server."""
     try:
         import uvicorn
@@ -396,7 +402,8 @@ def tools_cmd(profile: str):
         console.print("[bold red]Error: fastapi and uvicorn required. Run: pip install attack-agent[api][/]")
         sys.exit(1)
 
-    runtime = TeamRuntime()
+    rt_config = _load_config(config)
+    runtime = TeamRuntime(rt_config)
     app = create_app(runtime)
     console.print(f"[bold green]Starting API server on port {port}...[/]")
     uvicorn.run(app, host="0.0.0.0", port=port)

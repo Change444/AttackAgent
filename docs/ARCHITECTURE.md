@@ -153,13 +153,7 @@ Required direction:
 
 ### 4.7 UI Gap
 
-The repository has CLI and FastAPI endpoints. It does not yet have the intended Web UI/GUI console.
-
-Required direction:
-
-- Stabilize API semantics first.
-- Add SSE/WebSocket event stream.
-- Build Web UI around dashboard, project workspace, team board, idea board, memory board, review queue, candidate flag panel, artifact viewer, and replay timeline.
+Status: **L10 in progress** — React + Tailwind Web UI built in `web/` directory with Vite toolchain. Served as static assets by FastAPI via `StaticFiles(html=True)` mount (guarded by `web/dist/` existence check). All 11 core views implemented: Dashboard, Project Workspace, Graph View, Team Board, Idea Board, Memory Board, Observer Panel, Review Queue, Candidate Flag Panel, Artifact Viewer, Replay Timeline. SSE real-time updates via `useSSE` hook + `SSEContext` provider. Human operations implemented: start/pause/resume project, approve/reject review, add hint. Solver freeze/stop/launch actions show as disabled (API endpoints pending). Dev workflow: Vite dev server proxies `/api` to FastAPI; production uses single port 8000 serving both API and static UI.
 
 ## 5. Module Responsibility
 
@@ -179,6 +173,8 @@ Required direction:
 | `team/observer.py` | Mandatory scheduling-loop participant | Produces intervention-level reports consumed by Manager — L7 integrated |
 | `team/merge.py` | Dedup/arbitration helpers | Knowledge merge and route hub with packet pipeline (validate→dedup→arbitrate→route) |
 | `team/tool_broker.py` | All tool execution broker with IOContextProvider | All tool execution broker — policy gate + event journal for all primitives |
+| `team/api.py` | Read-only + review governance REST endpoints + StaticFiles mount for Web UI | Full REST + SSE event stream + project lifecycle + Web UI static asset serving — Blackboard-only data source |
+| `web/` | React + Tailwind Web UI console (Vite build → `web/dist/`) | 11 views consuming L9 API + SSE stream only — operator dashboard, project workspace, review queue, replay timeline |
 
 ## 6. Implementation Doctrine
 
