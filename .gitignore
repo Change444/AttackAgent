@@ -19,6 +19,15 @@ ENV/
 dist/
 build/
 
+# Node.js / Web UI
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Runtime data
+data/
+*.db
+
 # OS
 .DS_Store
 Thumbs.db
