@@ -32,6 +32,7 @@ from attack_agent.team.protocol import (
     PolicyOutcome,
     ReviewRequest,
     SolverSession,
+    SolverStatus,
     StrategyAction,
     TeamProject,
     to_dict,
@@ -157,7 +158,7 @@ class TeamRuntime:
         )
         return self.scheduler.run_project(
             project.project_id, self.manager, self.blackboard, self,
-            self.context, self.policy,
+            self.context, self.policy, self.solver_manager,
         )
 
     def run_all(self, challenge_ids: list[str]) -> dict[str, TeamProject]:
@@ -212,7 +213,7 @@ class TeamRuntime:
                 )
 
         # 3. Run all projects via SyncScheduler
-        results = self.scheduler.run_all(self.manager, self.blackboard, project_ids, self, self.context, self.policy)
+        results = self.scheduler.run_all(self.manager, self.blackboard, project_ids, self, self.context, self.policy, self.solver_manager)
 
         # 4. Sync StateGraphService → Blackboard final state first (Phase K-3)
         for pid in project_ids:
@@ -244,12 +245,14 @@ class TeamRuntime:
             and self._state_graph is not None
         )
 
-    def _execute_solver_cycle(self, project_id: str) -> dict | None:
+    def _execute_solver_cycle(self, project_id: str, solver_id: str = "") -> dict | None:
         """Execute one real solver cycle via Dispatcher.
 
         BOOTSTRAP+REASON+first EXPLORE are all done in a single call,
         matching CompetitionPlatform.run_cycle() behavior where one
         cycle includes full stage advancement + execution.
+
+        L5: solver_id is injected into all outcome event payloads.
 
         Returns a dict with outcome summary, or None if execution failed.
         """
@@ -346,6 +349,7 @@ class TeamRuntime:
                     "novelty": obs.novelty,
                     "entry_id": obs.id,
                     "summary": obs.payload.get("summary", obs.kind),
+                    "solver_id": solver_id,
                 },
                 source="team_runtime_executor",
             )
@@ -364,6 +368,7 @@ class TeamRuntime:
                 "failure_reason": outcome.failure_reason or "",
                 "broker_execution": True,
                 "stagnation_counter": record.stagnation_counter,
+                "solver_id": solver_id,
             },
             source="team_runtime_executor",
         )
@@ -380,6 +385,7 @@ class TeamRuntime:
                     "dedupe_key": flag.dedupe_key,
                     "source_chain": flag.source_chain,
                     "evidence_refs": flag.evidence_refs,
+                    "solver_id": solver_id,
                 },
                 source="team_runtime_executor",
             )
@@ -413,6 +419,7 @@ class TeamRuntime:
                     ],
                     "active_family": pg.active_family,
                     "family_priority": pg.family_priority,
+                    "solver_id": solver_id,
                 },
                 source="team_runtime_executor",
             )
@@ -429,6 +436,7 @@ class TeamRuntime:
                     "auth_headers_keys": list(ss.auth_headers.keys()),
                     "base_url": ss.base_url,
                     "summary": f"session_state: {len(ss.cookies)} cookies, {len(ss.auth_headers)} auth headers",
+                    "solver_id": solver_id,
                 },
                 source="team_runtime_executor",
             )
@@ -441,6 +449,7 @@ class TeamRuntime:
                 payload={
                     "stagnation_update": True,
                     "stagnation_counter": record.stagnation_counter,
+                    "solver_id": solver_id,
                 },
                 source="team_runtime_executor",
             )
@@ -455,6 +464,7 @@ class TeamRuntime:
             ],
             "failure_reason": outcome.failure_reason,
             "observations_count": len(outcome.observations),
+            "solver_id": solver_id,
         }
 
     # -- introspection --
@@ -699,9 +709,34 @@ class TeamRuntime:
                                     idea_id=dk, risk_level=action.risk_level)
         elif action.action_type in (ActionType.LAUNCH_SOLVER, ActionType.STEER_SOLVER):
             if self.use_real_executor:
-                result = self._execute_solver_cycle(project_id)
-                if result is not None and self.state_sync is not None and self._state_graph is not None:
-                    self.state_sync.sync_delta(project_id, self._state_graph, self.blackboard)
+                # L5: find or create session for this re-execution
+                solver_id = action.target_solver_id
+                if not solver_id:
+                    state = self.blackboard.rebuild_state(project_id)
+                    for s in state.sessions:
+                        if s.status in (SolverStatus.RUNNING, SolverStatus.ASSIGNED, SolverStatus.CREATED):
+                            solver_id = s.solver_id
+                            break
+                if not solver_id:
+                    session = self.solver_manager.create_and_persist(
+                        project_id, self.blackboard, "network"
+                    )
+                    if session is not None:
+                        solver_id = session.solver_id
+                        self.solver_manager.claim_session(project_id, solver_id, self.blackboard)
+                        # Claim idea lease
+                        if self.ideas is not None:
+                            best_idea = self.ideas.get_best_unclaimed(project_id)
+                            if best_idea is not None:
+                                self.ideas.claim(project_id, best_idea.idea_id, solver_id)
+                        self.solver_manager.start_session(project_id, solver_id, self.blackboard)
+                if solver_id:
+                    result = self._execute_solver_cycle(project_id, solver_id)
+                    if result is not None and self.state_sync is not None and self._state_graph is not None:
+                        self.state_sync.sync_delta(project_id, self._state_graph, self.blackboard)
+                    # L5: complete session
+                    outcome = "ok" if (result and result.get("status") == "ok") else "error"
+                    self.solver_manager.complete_session(project_id, solver_id, outcome, self.blackboard)
 
         # Mark review as consumed — prevents double-execution
         self.blackboard.append_event(

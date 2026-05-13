@@ -185,6 +185,8 @@ Acceptance tests:
 
 ## 8. Phase L5 - Real SolverSession Ownership
 
+Status: complete
+
 Goal: make SolverSession a real long-lived role in the execution path.
 
 Implementation plan:

@@ -27,6 +27,7 @@ from attack_agent.team.protocol import (
     to_dict,
 )
 from attack_agent.team.review import HumanReviewGate
+from attack_agent.team.solver import SolverSessionManager
 
 if TYPE_CHECKING:
     from attack_agent.team.context import ContextCompiler
@@ -98,6 +99,7 @@ class SyncScheduler:
         runtime: TeamRuntime | None = None,
         context_compiler: ContextCompiler | None = None,
         policy_harness: PolicyHarness | None = None,
+        solver_manager: SolverSessionManager | None = None,
     ) -> list[StrategyAction]:
         """One scheduling cycle for a project.
 
@@ -156,13 +158,77 @@ class SyncScheduler:
 
         # Action was allowed by policy — check for follow-up converge/submit
 
+        # -- L5: create/claim/start SolverSession before execution --
+        solver_id = ""
+        if (
+            solver_manager is not None
+            and runtime is not None
+            and runtime.use_real_executor
+            and action.action_type in (ActionType.LAUNCH_SOLVER, ActionType.STEER_SOLVER)
+        ):
+            if action.action_type == ActionType.LAUNCH_SOLVER:
+                session = solver_manager.create_and_persist(
+                    project_id, blackboard, profile="network",
+                )
+                if session is None:
+                    # Concurrency limit reached — cannot launch new solver
+                    return [action]
+                solver_id = session.solver_id
+            elif action.action_type == ActionType.STEER_SOLVER and action.target_solver_id:
+                # STEER_SOLVER: reuse existing session if still active
+                existing = solver_manager.get_session(
+                    project_id, action.target_solver_id, blackboard
+                )
+                if existing is not None and existing.status in (
+                    SolverStatus.ASSIGNED, SolverStatus.RUNNING,
+                    SolverStatus.WAITING_REVIEW,
+                ):
+                    solver_id = existing.solver_id
+                else:
+                    session = solver_manager.create_and_persist(
+                        project_id, blackboard, profile="network",
+                    )
+                    if session is None:
+                        return [action]
+                    solver_id = session.solver_id
+            else:
+                # STEER_SOLVER without target_solver_id — create new
+                session = solver_manager.create_and_persist(
+                    project_id, blackboard, profile="network",
+                )
+                if session is None:
+                    return [action]
+                solver_id = session.solver_id
+
+            # Claim session → ASSIGNED
+            solver_manager.claim_session(project_id, solver_id, blackboard)
+
+            # Claim idea lease: bind solver to best unclaimed idea
+            if runtime.ideas is not None:
+                best_idea = runtime.ideas.get_best_unclaimed(project_id)
+                if best_idea is not None:
+                    runtime.ideas.claim(project_id, best_idea.idea_id, solver_id)
+                    blackboard.append_event(
+                        project_id=project_id,
+                        event_type=EventType.WORKER_ASSIGNED.value,
+                        payload={
+                            "solver_id": solver_id,
+                            "status": SolverStatus.ASSIGNED.value,
+                            "active_idea_id": best_idea.idea_id,
+                        },
+                        source="scheduler_l5",
+                    )
+
+            # Start session → RUNNING
+            solver_manager.start_session(project_id, solver_id, blackboard)
+
         # Execute real solver cycle if runtime has executor capability
         if (
             runtime is not None
             and runtime.use_real_executor
             and action.action_type in (ActionType.LAUNCH_SOLVER, ActionType.STEER_SOLVER)
         ):
-            result = runtime._execute_solver_cycle(project_id)
+            result = runtime._execute_solver_cycle(project_id, solver_id)
             if result is not None:
                 # Post-execution: sync delta from StateGraphService to Blackboard
                 if runtime.state_sync is not None and runtime._state_graph is not None:
@@ -172,12 +238,11 @@ class SyncScheduler:
 
                 # -- L4: compile solver context and update session binding --
                 if context_compiler is not None:
-                    state_l4 = blackboard.rebuild_state(project_id)
-                    solver_id = ""
-                    for s in state_l4.sessions:
-                        if s.status in (SolverStatus.RUNNING, SolverStatus.ASSIGNED):
-                            solver_id = s.solver_id
-                            break
+                    solver_session = None
+                    if solver_manager is not None and solver_id:
+                        solver_session = solver_manager.get_session(
+                            project_id, solver_id, blackboard
+                        )
                     if solver_id:
                         solver_ctx = context_compiler.compile_solver_context(
                             project_id, solver_id, blackboard
@@ -191,17 +256,16 @@ class SyncScheduler:
                             runtime.memory.store_entry(project_id, entry)
                         for entry in reduced.endpoints:
                             runtime.memory.store_entry(project_id, entry)
-                        # Update SolverSession with L4 fields
+                        # Update SolverSession with L4 fields via WORKER_HEARTBEAT
                         local_mem_ids = [m.entry_id for m in solver_ctx.local_memory[:5]]
                         active_idea_id = solver_ctx.active_idea.idea_id if solver_ctx.active_idea else ""
                         cost = result.get("cost", 0.0) or 0.0
-                        budget_remaining = max(0.0, s.budget_remaining - cost) if s else 0.0
+                        budget_remaining = max(0.0, solver_session.budget_remaining - cost) if solver_session else 0.0
                         blackboard.append_event(
                             project_id=project_id,
-                            event_type=EventType.WORKER_ASSIGNED.value,
+                            event_type=EventType.WORKER_HEARTBEAT.value,
                             payload={
                                 "solver_id": solver_id,
-                                "profile": s.profile if s else "network",
                                 "status": SolverStatus.RUNNING.value,
                                 "budget_remaining": budget_remaining,
                                 "active_idea_id": active_idea_id,
@@ -211,6 +275,13 @@ class SyncScheduler:
                             },
                             source="scheduler_l4",
                         )
+
+                # -- L5: complete session after execution --
+                if solver_manager is not None and solver_id:
+                    outcome_str = "ok" if result.get("status") == "ok" else "error"
+                    solver_manager.complete_session(
+                        project_id, solver_id, outcome_str, blackboard
+                    )
 
                 # After execution, re-evaluate state for converge/submit
                 events = blackboard.load_events(project_id)
@@ -252,6 +323,13 @@ class SyncScheduler:
                             return [action, follow_up, submit_action]
                         return [action, follow_up]
                 return [action]
+            else:
+                # _execute_solver_cycle returned None — mark session failed
+                if solver_manager is not None and solver_id:
+                    solver_manager.complete_session(
+                        project_id, solver_id, "error", blackboard
+                    )
+                return [action]
 
         # for converge stage, also check submit
         if action.action_type == ActionType.CONVERGE:
@@ -276,6 +354,7 @@ class SyncScheduler:
         runtime: TeamRuntime | None = None,
         context_compiler: ContextCompiler | None = None,
         policy_harness: PolicyHarness | None = None,
+        solver_manager: SolverSessionManager | None = None,
     ) -> TeamProject:
         """Run a project until done / abandoned.
 
@@ -302,7 +381,7 @@ class SyncScheduler:
 
             self.schedule_cycle(
                 project_id, manager, blackboard, runtime,
-                context_compiler, policy_harness,
+                context_compiler, policy_harness, solver_manager,
             )
 
         # max cycles reached — mark abandoned if not done
@@ -329,13 +408,14 @@ class SyncScheduler:
         runtime: TeamRuntime | None = None,
         context_compiler: ContextCompiler | None = None,
         policy_harness: PolicyHarness | None = None,
+        solver_manager: SolverSessionManager | None = None,
     ) -> dict[str, TeamProject]:
         """Run all projects sequentially (concurrency=1)."""
         results: dict[str, TeamProject] = {}
         for pid in project_ids:
             results[pid] = self.run_project(
                 pid, manager, blackboard, runtime,
-                context_compiler, policy_harness,
+                context_compiler, policy_harness, solver_manager,
             )
         return results
 

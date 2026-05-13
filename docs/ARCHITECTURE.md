@@ -108,7 +108,9 @@ Required direction:
 
 Status: **L4 resolved** — SolverContextPack now carries facts, credentials, endpoints, failure boundaries, recent tool outcomes, budget constraints, scratchpad summary, and recent event IDs. MemoryReducer extracts structured memory from tool outcomes. `is_boundary_repetition` prevents immediate repetition of failed approaches. All lists bounded by SOLVER_CONTEXT_LIMITS.
 
-Remaining gap: SolverContextPack is compiled in the production scheduling path (after `_execute_solver_cycle`), but SolverSession does not yet have full long-lived ownership (L5). Inbox remains empty until L6 (KnowledgePacket).
+**L5 resolved** — SolverSession now has real long-lived ownership. Sessions are created/claimed/started before execution via SolverSessionManager in the scheduling path. Outcome events include solver_id. Idea leases are exclusive. L4 field updates use WORKER_HEARTBEAT events instead of WORKER_ASSIGNED to avoid state machine conflicts.
+
+Remaining gap: Inbox remains empty until L6 (KnowledgePacket).
 
 ### 4.3 Collaboration Gap
 
