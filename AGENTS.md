@@ -8,9 +8,9 @@ The product direction is a **multi-Solver team runtime** with Manager, Solver, O
 
 ## Architecture Warning
 
-Team Runtime Phase A-K and L1-L10 created the platform components. These phases are **not** the final architecture. L11 stabilization is still required to prove that the new components are active in the real solve path.
+Team Runtime Phase A-K and L1-L10 created the platform components. L11 real-path stabilization is now complete: all Manager decisions are recorded as `STRATEGY_ACTION`, approved submissions execute once, pause/resume blocks scheduling, verification-state fields align, ToolBroker journals real-path events, Observer is trigger-throttled, and replay uses run_id isolation.
 
-Do not assume a component is complete because a class, endpoint, or UI view exists. Check whether the real solving path uses it.
+Do not assume a component is complete because a class, endpoint, or UI view exists. The remaining gaps are: memory must be proven as mandatory Solver input in the real path, multi-Solver collaboration must be proven end-to-end, and ToolBroker must become the sole execution path (not only retroactive journaling).
 
 ## Read First
 
@@ -51,12 +51,12 @@ runtime.solve_all()
 | Entry | `build_team_runtime()` + `TeamRuntime.solve_all()` | Keep as public entry |
 | Execution | `Dispatcher` -> `WorkerRuntime` | Route real solve primitive execution through ToolBroker |
 | Runtime state | `StateGraphService` plus Blackboard sync | Blackboard as decision source, StateGraph as per-solver scratchpad |
-| Scheduling | `SyncScheduler` calls `TeamManager`, then legacy execution; L11 must separate Manager `STRATEGY_ACTION` events from worker lifecycle events | Manager consumes compiled context, reviews, observer reports, budgets, and solver states |
+| Scheduling | `SyncScheduler` calls `TeamManager`, then legacy execution; Manager decisions recorded as STRATEGY_ACTION, worker lifecycle events only from SolverSessionManager | Manager consumes compiled context, reviews, observer reports, budgets, and solver states |
 | Memory | `MemoryService`, `IdeaService`, `ContextCompiler`, `MemoryReducer`, and `SolverContextPack` exist | Memory is proven as mandatory Solver input in the real solve path |
 | Collaboration | `KnowledgePacket` and `MergeHub` exist | Solver output flows through KnowledgePacket -> MergeHub -> Blackboard/inbox with multi-Solver proof |
-| Review | `HumanReviewGate` exists; L11 must fix approved-submit once-only execution and modified review execution | Review decisions pause/resume/modify real actions exactly once |
-| Observer | Observer runs in scheduling loop, but needs trigger/throttle | Observer produces actionable steering without event spam |
-| Tools | ToolBroker handles API/manual tool requests; real solve path still goes through Dispatcher/WorkerRuntime directly | ToolBroker mediates real solve tool execution |
+| Review | `HumanReviewGate` exists; approved submit executes once, modified review executes modified payload with delta | Review decisions pause/resume/modify real actions exactly once |
+| Observer | Observer runs in scheduling loop with trigger/throttle via should_observe() | Observer produces actionable steering without event spam |
+| Tools | ToolBroker handles API/manual requests and retroactive real-path journaling via journal_real_execution(); real solve path still goes through Dispatcher/WorkerRuntime directly | ToolBroker mediates real solve tool execution |
 | UI | REST API, SSE, and React/Tailwind Web UI exist | Web UI remains product boundary while runtime semantics stabilize |
 
 ## Non-Negotiable Rules

@@ -759,11 +759,11 @@ python -m unittest tests/test_real_primitives.TestRealPrimitives.test_http_post
 
 ## 10. Team Runtime
 
-AttackAgent 提供 Team Runtime 多 Solver 协作平台。L1-L10 平台组件已经存在，但真实解题路径仍处于 L11 稳定化阶段；当前支持 CLI、Python API、REST API + SSE 事件流、Web UI Console 四种操作面。
+AttackAgent 提供 Team Runtime 多 Solver 协作平台。L1-L11 平台组件已经存在，L11 稳定化已完成：所有 Manager 决策记录为 STRATEGY_ACTION、批准的提交仅执行一次、暂停/恢复阻断调度循环、验证状态字段对齐、ToolBroker 真实路径事件日志、Observer 触发/节流、run_id 隔离回放。当前支持 CLI、Python API、REST API + SSE 事件流、Web UI Console 四种操作面。
 
 详细使用说明见 [docs/TEAM_PLATFORM_GUIDE.md](TEAM_PLATFORM_GUIDE.md)。
 
-### 10.1 L1-L10 能力栈
+### 10.1 L1-L11 能力栈
 
 | Phase | 能力 | 说明 |
 |-------|------|------|
@@ -774,9 +774,10 @@ AttackAgent 提供 Team Runtime 多 Solver 协作平台。L1-L10 平台组件已
 | L5 | SolverSession 生命周期 | created→assigned→running→completed/failed, idea 独占租约 |
 | L6 | KnowledgePacket + MergeHub | 结构化 Solver 协作：validate→dedup→arbitrate→route |
 | L7 | Observer 调度循环 | 干预级别：observe/reminder/steer/throttle/stop_reassign/safety_block |
-| L8 | ToolBroker 实执行路径 | 9 个原语全部 brokered, IO 依赖原语走 IOContextProvider |
+| L8 | ToolBroker 实执行路径 | 9 个原语全部 brokered, IO 依赖原语走 IOContextProvider, 真实路径 retroactive 事件 |
 | L9 | REST API + SSE 事件流 | 29 端点 + 实时 SSE 推送 + 项目生命周期 |
 | L10 | Web UI Console | 11 视图 + 人工操作 + SSE 实时更新 |
+| L11 | 真实路径稳定化 | STRATEGY_ACTION 分离、批准提交一次执行、暂停恢复阻断、验证字段对齐、ToolBroker retroactive 日志、Observer 触发节流、run_id 隔离 |
 
 ### 10.2 快速上手
 

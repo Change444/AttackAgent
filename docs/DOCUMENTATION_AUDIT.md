@@ -4,7 +4,7 @@ Last updated: 2026-05-14
 
 This audit explains why the documentation system was reorganized and tracks the current state of each document.
 
-2026-05-14 update: the documentation now distinguishes **platform components exist** from **the real solve path is complete**. Phase L11 was added to track stabilization issues found in scheduler, review execution, pause/resume, verification state, ToolBroker routing, Observer throttling, and audit continuity.
+2026-05-14 update: the documentation now distinguishes **platform components exist** from **the real solve path is complete**. Phase L11 stabilized the real solve path: all Manager decisions are STRATEGY_ACTION, approved submit executes once, pause/resume blocks scheduling, verification fields align, ToolBroker retroactive events, Observer trigger/throttle, and run_id isolation.
 
 ## 1. Problems Found
 
@@ -18,7 +18,7 @@ The original roadmap mixed design, completion logs, and future plans. It now act
 
 ### 1.3 Event semantics were overloaded
 
-`candidate_flag` was reused for idea lifecycle, convergence actions, and merge output. L1 resolved most of this with distinct event types. L11 keeps one remaining event-semantics correction: Manager decisions such as `LAUNCH_SOLVER` must be recorded as `STRATEGY_ACTION`, not worker lifecycle events.
+`candidate_flag` was reused for idea lifecycle, convergence actions, and merge output. L1 resolved most of this with distinct event types. L11 completed the remaining correction: all Manager decisions (LAUNCH_SOLVER, STEER_SOLVER, etc.) are now recorded as `STRATEGY_ACTION`, not worker lifecycle events.
 
 ### 1.4 Documentation rules were too rigid
 
@@ -35,8 +35,8 @@ The old convention "do not update docs for dataclass/enum changes" was too stric
 | `README.md` | Short project entry, corrected current status, quick start, doc map |
 | `CLAUDE.md` | Working rules for coding agents |
 | `AGENTS.md` | Local agent guidance when present in workspace context |
-| `docs/ARCHITECTURE.md` | Architecture authority: current reality, L11 stabilization findings, target boundaries, module responsibility, gaps |
-| `docs/TEAM_EVOLUTION_ROADMAP.md` | Executable migration plan with acceptance criteria per phase, including L11 real-path stabilization |
+| `docs/ARCHITECTURE.md` | Architecture authority: current reality, L11 stabilization complete, target boundaries, module responsibility, gaps |
+| `docs/TEAM_EVOLUTION_ROADMAP.md` | Executable migration plan with acceptance criteria per phase; L11 complete |
 | `docs/CONVENTIONS.md` | Engineering, memory, security, and documentation rules |
 | `docs/TEAM_PLATFORM_GUIDE.md` | Platform guide: CLI, Python API, REST API, SSE stream, ToolBroker, Web UI Console, and testing playbook |
 | `docs/USER_GUIDE.md` | User-facing manual; may lag architecture details, so defer to `ARCHITECTURE.md` for runtime truth |
@@ -80,5 +80,5 @@ For history:
 - `docs/CHANGELOG.md` contains Phase A-K and version 4.x entries that reference pre-L0 architecture. These are historical and should not override `ARCHITECTURE.md`.
 - `docs/USER_GUIDE.md` still contains older prose and should be cleaned later, but it is no longer the architecture authority.
 - Solver freeze/stop/launch and mark idea valid/invalid are documented as pending API/UI operations and will need doc updates when implemented.
-- Multi-Solver concurrency above one Solver per project is documented as a remaining limitation until L11 and collaboration tests pass.
-- L11 must update documentation again when the real solve path proves launch/session separation, approved-submit execution, pause/resume blocking, verification-state alignment, ToolBroker routing, Observer throttling, and run replay isolation.
+- Multi-Solver concurrency above one Solver per project is documented as a remaining limitation until collaboration tests pass end-to-end.
+- The remaining gaps after L11 are: memory must be proven as mandatory Solver input in the real path, multi-Solver collaboration must be proven end-to-end, and ToolBroker must become the sole execution path (not only retroactive journaling).
