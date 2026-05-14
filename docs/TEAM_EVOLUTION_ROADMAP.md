@@ -1,8 +1,10 @@
 # AttackAgent Team Runtime Execution Plan
 
-Last updated: 2026-05-12
+Last updated: 2026-05-14
 
 This is the executable plan for moving the current hybrid runtime toward the intended multi-Solver team platform. It replaces the older phase-completion roadmap as the planning authority.
+
+L1-L10 introduced the platform components. Phase L11 is now required to stabilize the real solve path and prove that the new components are not only side paths or UI-facing scaffolding.
 
 ## 1. Planning Baseline
 
@@ -326,7 +328,7 @@ Acceptance tests:
 
 ## 13. Phase L10 - Web UI / GUI Console
 
-Status: in progress
+Status: complete
 
 Goal: expose the team runtime as an operable product.
 
@@ -378,8 +380,68 @@ Do this order unless a bug blocks the baseline:
 9. L8 ToolBroker real execution path.
 10. L9 API event stream.
 11. L10 Web UI.
+12. L11 real-path stabilization and test hardening.
 
-## 15. Definition of Done for the Team Architecture
+## 15. Phase L11 - Real-Path Stabilization
+
+Status: planned
+
+Goal: close the gap between component-level implementation and the actual solving path.
+
+### Problems to fix
+
+1. **P0 launch/session event separation**
+   - Current risk: `LAUNCH_SOLVER` is recorded as `WORKER_ASSIGNED`, which can create a phantom active session before the real SolverSession exists.
+   - Required change: record Manager decisions as `STRATEGY_ACTION`; only `SolverSessionManager` writes worker lifecycle events.
+
+2. **P0 approved submit execution**
+   - Current risk: approving a high-risk submit can call `submit_flag()` again and create a second review instead of submitting once.
+   - Required change: add an approval-aware execution path or approval token so approved actions execute exactly once without re-entering review creation.
+
+3. **P1 pause/resume semantics**
+   - Current risk: `run_project()` checks pause in a separate loop before the real scheduling loop, so pause delays but does not reliably block scheduling.
+   - Required change: move pause handling inside the single real scheduling loop.
+
+4. **P1 verification-state field alignment**
+   - Current risk: `SubmissionVerifier` writes `idea_id`, while `ContextCompiler` reads `candidate_flag_id`.
+   - Required change: standardize on one id field or make the compiler read both with clear precedence.
+
+5. **P1 ToolBroker on real solve path**
+   - Current risk: ToolBroker handles API/manual tool requests, but real solving still executes through `Dispatcher.schedule()` -> `WorkerRuntime.run_task()`.
+   - Required change: route primitive execution in the real solve path through ToolBroker, keeping WorkerRuntime as the backend adapter.
+
+6. **P1 Observer trigger/throttle**
+   - Current risk: Observer can emit reports every cycle and create noisy feedback loops.
+   - Required change: run Observer on meaningful triggers: N new events, repeated failures, low novelty, timeout, budget anomaly, or human request.
+
+7. **P2 replay/audit continuity**
+   - Current risk: `solve_all()` clears project Blackboard events.
+   - Required change: introduce `run_id` isolation or archival instead of deleting prior events.
+
+### L11 acceptance tests
+
+- Launching a Solver records a `STRATEGY_ACTION` first, then exactly one real SolverSession lifecycle sequence.
+- With `max_project_solvers=1`, a launch action creates one real SolverSession and does not self-block.
+- A high-risk submit creates one ReviewRequest, approval produces one real submission, and no second pending review is created.
+- A rejected submit writes a policy memory entry or failure boundary and does not call the provider.
+- A modified review executes the modified payload and records the delta.
+- Paused projects do not execute scheduling cycles until resumed.
+- Evidence-chain verification updates `ManagerContext.verification_state` for the candidate/idea that Manager later evaluates.
+- A real solve cycle emits ToolBroker request/policy/result events before WorkerRuntime backend execution.
+- Observer reports are emitted only when trigger conditions are met or the operator explicitly requests observation.
+- Re-running `solve_all()` does not destroy the previous run's replay/audit trail.
+
+### Manual validation commands
+
+```bash
+python -m unittest discover tests/
+npm.cmd --prefix web run build
+python -m attack_agent team serve --port 8000
+```
+
+PowerShell note: use `npm.cmd` instead of `npm` if the local execution policy blocks `npm.ps1`.
+
+## 16. Definition of Done for the Team Architecture
 
 The architecture is not "done" until these are true in the real solve path:
 
@@ -394,3 +456,4 @@ The architecture is not "done" until these are true in the real solve path:
 - Candidate flag submission is governed and auditable.
 - Replay explains the decision chain.
 - Web UI can operate and audit the process.
+- L11 acceptance tests prove the real solve path uses the intended components rather than side-path scaffolding.

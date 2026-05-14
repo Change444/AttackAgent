@@ -1,69 +1,50 @@
 # Documentation Audit
 
-Last updated: 2026-05-12
+Last updated: 2026-05-14
 
-This audit explains why the documentation system was reorganized.
+This audit explains why the documentation system was reorganized and tracks the current state of each document.
+
+2026-05-14 update: the documentation now distinguishes **platform components exist** from **the real solve path is complete**. Phase L11 was added to track stabilization issues found in scheduler, review execution, pause/resume, verification state, ToolBroker routing, Observer throttling, and audit continuity.
 
 ## 1. Problems Found
 
 ### 1.1 Current reality and target architecture were mixed
 
-Several documents described Team Runtime Phase A-K as completed, but the code still shows a hybrid runtime:
-
-- `TeamRuntime` is the entry point.
-- `Dispatcher` and `WorkerRuntime` still execute real solve cycles.
-- `StateGraphService` remains execution-side state.
-- `Blackboard` is durable but still synchronized from legacy state.
-- `ContextCompiler`, `Observer`, `Review`, `MergeHub`, and `SolverSessionManager` exist but are not all mandatory in the real scheduling loop.
-
-This made it easy for future implementation agents to assume the final architecture already existed.
+Early documents described Team Runtime Phase A-K as completed, but the code still showed a hybrid runtime. L0 reset established the distinction. L1-L10 added the platform components, but the 2026-05-14 review found that some components are still not fully active in the real solve path.
 
 ### 1.2 Roadmap acted like a completion log
 
-The previous `TEAM_EVOLUTION_ROADMAP.md` mixed:
+The original roadmap mixed design, completion logs, and future plans. It now acts as an executable migration plan with explicit acceptance criteria per phase. L11 is the active stabilization phase.
 
-- original target design,
-- completed phase logs,
-- implementation notes,
-- acceptance claims,
-- future plans.
+### 1.3 Event semantics were overloaded
 
-That made it too hard to answer: "What should we do next?"
-
-### 1.3 Event semantics were not called out strongly enough
-
-The biggest architecture bug is semantic overloading:
-
-- `candidate_flag` is used for candidate flags,
-- idea lifecycle,
-- convergence actions,
-- MergeHub arbitration output.
-
-This distorts scheduling and submission governance. The new roadmap makes event cleanup Phase L1.
+`candidate_flag` was reused for idea lifecycle, convergence actions, and merge output. L1 resolved most of this with distinct event types. L11 keeps one remaining event-semantics correction: Manager decisions such as `LAUNCH_SOLVER` must be recorded as `STRATEGY_ACTION`, not worker lifecycle events.
 
 ### 1.4 Documentation rules were too rigid
 
-The old convention "do not update docs for dataclass/enum changes" was too strict for an architecture migration. Protocol and event semantics are part of the architecture. Future docs should not copy every field, but they must describe meaning, ownership, and migration impact.
+The old convention "do not update docs for dataclass/enum changes" was too strict for an architecture migration. Updated docs now allow protocol/event semantics documentation when it affects runtime behavior.
 
 ### 1.5 Historical docs were used as live design docs
 
-`CHANGELOG.md` is useful history, but it should not drive implementation. It can say a phase was completed, while the real architecture may still need integration work.
+`CHANGELOG.md` is historical only. It must not override `ARCHITECTURE.md` or `TEAM_EVOLUTION_ROADMAP.md`.
 
-## 2. New Documentation Roles
+## 2. Current Document Roles
 
-| Document | Role |
+| Document | Current Role |
 |---|---|
-| `README.md` | Short project entry and doc map |
-| `AGENTS.md` | Instructions for future coding agents |
-| `docs/ARCHITECTURE.md` | Current architecture authority |
-| `docs/TEAM_EVOLUTION_ROADMAP.md` | Executable migration plan |
+| `README.md` | Short project entry, corrected current status, quick start, doc map |
+| `CLAUDE.md` | Working rules for coding agents |
+| `AGENTS.md` | Local agent guidance when present in workspace context |
+| `docs/ARCHITECTURE.md` | Architecture authority: current reality, L11 stabilization findings, target boundaries, module responsibility, gaps |
+| `docs/TEAM_EVOLUTION_ROADMAP.md` | Executable migration plan with acceptance criteria per phase, including L11 real-path stabilization |
 | `docs/CONVENTIONS.md` | Engineering, memory, security, and documentation rules |
-| `docs/TEAM_PLATFORM_GUIDE.md` | Current CLI/API usage and caveats |
-| `docs/USER_GUIDE.md` | User examples; verify against architecture before using for implementation |
-| `docs/CHANGELOG.md` | Historical record only |
-| `docs/DOCUMENTATION_AUDIT.md` | Rationale for documentation restructuring |
+| `docs/TEAM_PLATFORM_GUIDE.md` | Platform guide: CLI, Python API, REST API, SSE stream, ToolBroker, Web UI Console, and testing playbook |
+| `docs/USER_GUIDE.md` | User-facing manual; may lag architecture details, so defer to `ARCHITECTURE.md` for runtime truth |
+| `docs/CHANGELOG.md` | Historical record only; do not use as design spec |
+| `docs/DOCUMENTATION_AUDIT.md` | Rationale for documentation restructuring and current doc roles |
+| `docs/EXECUTION_PROMPT_TEMPLATE.md` | Standardized template for assigning roadmap phase work to agents |
 
-## 3. Current Authoritative Reading Order
+## 3. Authoritative Reading Order
 
 For architecture or team-runtime implementation:
 
@@ -83,18 +64,21 @@ For history:
 
 1. `docs/CHANGELOG.md`
 
-## 4. Documents Rewritten
+## 4. Documents Rewritten During L0-L11
 
-- `README.md`
-- `AGENTS.md`
-- `docs/CONVENTIONS.md`
-- `docs/ARCHITECTURE.md`
-- `docs/TEAM_EVOLUTION_ROADMAP.md`
-- `docs/TEAM_PLATFORM_GUIDE.md`
-- `CLAUDE.md`
+- `README.md` (L0 + L10 + L11 status correction)
+- `CLAUDE.md` (L0, supersedes older tool-specific assumptions)
+- `docs/CONVENTIONS.md` (L0)
+- `docs/ARCHITECTURE.md` (L0 + each phase + L11 findings)
+- `docs/TEAM_EVOLUTION_ROADMAP.md` (L0 + each phase status update + L11 plan)
+- `docs/TEAM_PLATFORM_GUIDE.md` (L9 + L10 full rewrite + L11 testing guide)
+- `docs/USER_GUIDE.md` (user-facing guide; needs future cleanup for stale claims)
+- `docs/DOCUMENTATION_AUDIT.md` (L0 + L10 + L11 update)
 
-## 5. Known Remaining Risk
+## 5. Remaining Documentation Risks
 
-`docs/CHANGELOG.md` and `docs/USER_GUIDE.md` may still contain older statements. They are intentionally retained as historical or user-facing references, but they should not override `ARCHITECTURE.md`.
-
-Future work should gradually update `USER_GUIDE.md` after the runtime API stabilizes.
+- `docs/CHANGELOG.md` contains Phase A-K and version 4.x entries that reference pre-L0 architecture. These are historical and should not override `ARCHITECTURE.md`.
+- `docs/USER_GUIDE.md` still contains older prose and should be cleaned later, but it is no longer the architecture authority.
+- Solver freeze/stop/launch and mark idea valid/invalid are documented as pending API/UI operations and will need doc updates when implemented.
+- Multi-Solver concurrency above one Solver per project is documented as a remaining limitation until L11 and collaboration tests pass.
+- L11 must update documentation again when the real solve path proves launch/session separation, approved-submit execution, pause/resume blocking, verification-state alignment, ToolBroker routing, Observer throttling, and run replay isolation.

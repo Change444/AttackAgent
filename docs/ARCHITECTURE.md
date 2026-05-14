@@ -1,8 +1,8 @@
 # AttackAgent Architecture
 
-Last updated: 2026-05-12
+Last updated: 2026-05-14
 
-This document is the current architecture authority. It separates current implementation reality from the target team-runtime design so future agents do not mistake scaffolding for completed architecture.
+This document is the current architecture authority. L1-L10 platform components now exist, but the real solve path still has L11 stabilization work before the architecture can be called complete.
 
 ## 1. Product Direction
 
@@ -50,8 +50,9 @@ Important facts:
 - `Dispatcher` and `WorkerRuntime` still perform real solve execution.
 - `StateGraphService` is still the execution-side state owner.
 - `BlackboardService` is durable and queryable, but it is still partly fed by sync from `StateGraphService`.
-- `ContextCompiler`, `PolicyHarness`, `HumanReviewGate`, `MergeHub`, `Observer`, and `SolverSessionManager` exist, but several are not yet required participants in every solve cycle.
+- `ContextCompiler`, `PolicyHarness`, `HumanReviewGate`, `MergeHub`, `Observer`, and `SolverSessionManager` exist, but several are not yet proven as required participants in the real solve path.
 - Multi-Solver collaboration is not complete. Default project solver count is still effectively one.
+- Web UI, REST API, and SSE infrastructure exist and build, but runtime semantics still need L11 stabilization.
 
 ## 3. Target Boundary
 
@@ -84,76 +85,87 @@ Final-state invariants:
 
 - Blackboard is the team truth source.
 - Manager is the only control plane.
+- Manager decisions are recorded as `STRATEGY_ACTION`; worker lifecycle events represent actual worker/session state only.
 - Solver sessions are long-lived roles, not isolated one-shot calls.
 - Solver sharing uses structured `KnowledgePacket`, not full chat logs.
-- Observer reports influence scheduling through Manager.
-- Human review can pause and resume real actions.
-- Policy applies before and after human approval.
+- Observer reports influence scheduling through Manager and are throttled by meaningful triggers.
+- Human review can pause and resume real actions exactly once.
+- Policy applies before tool/action execution and after human approval.
+- ToolBroker is on the real solve execution path, not only the manual API path.
 - Web UI consumes stable API/state events instead of reaching into internals.
 
 ## 4. Main Current Gaps
 
 ### 4.1 Scheduler Gap
 
-Current scheduler behavior is still stage-wrapper oriented. `TeamManager` returns simple `StrategyAction`s, then `SyncScheduler` calls legacy execution. It does not yet compile and consume a complete `ManagerContext` containing solver states, ideas, memory, observer reports, review decisions, resource status, and policy constraints.
+Status: **partially resolved, L11 required**.
 
-Required direction:
+`ContextCompiler.compile_manager_context()` is called before Manager decisions, and StrategyActions pass through `PolicyHarness`. However, action journaling still maps some Manager decisions to execution-state events. In particular, `LAUNCH_SOLVER` is recorded as `WORKER_ASSIGNED`, which can materialize a phantom active SolverSession before `SolverSessionManager.create_and_persist()` creates the real one. With `max_project_solvers=1`, this can block the real launch.
 
-- Make `ContextCompiler.compile_manager_context()` mandatory before every Manager decision.
-- Route every `StrategyAction` through `PolicyHarness`.
-- Make review-required actions pause and resume through `HumanReviewGate`.
-- Treat observer reports as scheduling inputs.
+Required invariant: Manager decisions must be recorded as `STRATEGY_ACTION`; only `SolverSessionManager` writes `WORKER_ASSIGNED`, `WORKER_HEARTBEAT`, `WORKER_TIMEOUT`, or terminal worker lifecycle events.
 
 ### 4.2 Memory Gap
 
-Status: **L4 resolved** — SolverContextPack now carries facts, credentials, endpoints, failure boundaries, recent tool outcomes, budget constraints, scratchpad summary, and recent event IDs. MemoryReducer extracts structured memory from tool outcomes. `is_boundary_repetition` prevents immediate repetition of failed approaches. All lists bounded by SOLVER_CONTEXT_LIMITS.
+Status: **component complete, real-path verification required**.
 
-**L5 resolved** — SolverSession now has real long-lived ownership. Sessions are created/claimed/started before execution via SolverSessionManager in the scheduling path. Outcome events include solver_id. Idea leases are exclusive. L4 field updates use WORKER_HEARTBEAT events instead of WORKER_ASSIGNED to avoid state machine conflicts.
+`SolverContextPack` carries facts, credentials, endpoints, failure boundaries, recent tool outcomes, budget constraints, scratchpad summary, and recent event IDs. `MemoryReducer` extracts structured memory from tool outcomes. The remaining requirement is to prove the real solve path feeds the next Solver turn from this structured context rather than only from legacy Dispatcher/StateGraph state.
 
-**L6 resolved** — SolverContextPack.inbox is now populated from routed/targeted KnowledgePackets. MergeHub validates, dedupes, arbitrates, and routes packets. Global accepted packets update Blackboard (OBSERVATION/CANDIDATE_FLAG events). Targeted packets enter Solver inbox via KNOWLEDGE_PACKET_MERGED events. Conflicting facts produce merge decisions visible in Blackboard. Help requests route to solver profiles.
+`SolverSession` lifecycle models exist and outcome events include `solver_id`, but SolverSession ownership is not complete until Manager decision events and worker lifecycle events are separated.
 
 ### 4.3 Collaboration Gap
 
-Status: **L6 resolved** — KnowledgePacket is the formal Solver sharing payload with types (fact, idea, failure_boundary, credential, endpoint, artifact_summary, candidate_flag, help_request), source solver, confidence, evidence refs, routing priority, and suggested recipients. MergeHub validates, dedupes, arbitrates, and routes packets through the full pipeline. Global accepted packets update Blackboard as OBSERVATION/CANDIDATE_FLAG/ACTION_OUTCOME events. Targeted packets enter Solver inbox via KNOWLEDGE_PACKET_MERGED events. Raw logs remain evidence references, not broadcast content.
+Status: **component complete, real collaboration pending**.
+
+`KnowledgePacket` is the formal Solver sharing payload with types such as fact, idea, failure boundary, credential, endpoint, artifact summary, candidate flag, and help request. MergeHub validates, deduplicates, arbitrates, and routes packets. Raw logs remain evidence references, not broadcast content.
+
+This is not yet equivalent to true multi-Solver teamwork until an end-to-end run proves that one Solver publishes a packet, MergeHub routes it, and another Solver consumes it in its next context pack.
 
 ### 4.4 Observer Gap
 
-Status: **L7 resolved** — Observer is a mandatory scheduling-loop participant.
-`Observer.generate_report()` writes `OBSERVER_REPORT` events (not CHECKPOINT).
-`ContextCompiler` reconstructs full `ObservationReport` data including observations,
-intervention_level, and recommended_action. `TeamManager.decide_observer_response()`
-produces scheduling actions (steer/throttle/stop/reassign) based on intervention level.
-PolicyHarness allows observer safety-block actions through as needs_review instead of deny.
-Observer never directly mutates facts or stops a Solver.
+Status: **wired, needs throttling**.
+
+Observer is a scheduling-loop participant and writes `OBSERVER_REPORT` events. `ContextCompiler` reconstructs full ObserverReport data, and `TeamManager.decide_observer_response()` can produce steer/throttle/stop/reassign/review actions. Observer does not directly mutate facts or stop a Solver.
+
+The current loop should not generate an ObserverReport every cycle by default. It should run on triggers such as N new events, repeated failures, low novelty, solver timeout, budget anomaly, or human request.
 
 ### 4.5 Review Gap
 
-HumanReviewGate can create and resolve requests, but review decisions are not yet first-class execution leases. Some submit paths also rebuild policy actions with lower risk than the Manager originally requested.
+Status: **partially resolved, L11 required**.
 
-Required direction:
+`ReviewRequest` persists the proposed action payload and review decisions are journaled. Two gaps remain:
 
-- Persist paused action payloads inside `ReviewRequest`.
-- On approval, resume the exact approved action or approved modified action.
-- On rejection, write a `FailureBoundary` or policy memory entry.
-- Candidate flag submission must always pass SubmissionGovernor and review policy.
+- Approved `SUBMIT_FLAG` actions can re-enter the normal high-risk review path instead of executing once.
+- `MODIFIED` decisions are recorded but are not yet rebuilt into a modified executable action.
+
+Approval must execute the approved action exactly once through an approval-aware path.
 
 ### 4.6 Event Semantics Gap
 
-Current code reuses `candidate_flag` events for real candidate flags, idea lifecycle events, and convergence actions. This makes status, merge, and submit logic ambiguous.
+Status: **mostly resolved, with one critical exception**.
 
-Required direction:
-
-- Introduce or simulate distinct event names:
-  - `idea_proposed`, `idea_claimed`, `idea_verified`, `idea_failed`
-  - `candidate_flag_found`, `candidate_flag_verified`
-  - `strategy_action_recorded`
-  - `review_created`, `review_decided`
-  - `knowledge_packet_published`, `knowledge_packet_merged`
-- Keep compatibility adapters while moving new code to the clearer semantics.
+`IDEA_PROPOSED/CLAIMED/VERIFIED/FAILED`, `CANDIDATE_FLAG`, `SECURITY_VALIDATION`, and `KNOWLEDGE_PACKET_PUBLISHED/MERGED` are separated. The exception is Manager action recording: `LAUNCH_SOLVER`, `REASSIGN_SOLVER`, and some approved actions still map directly to worker lifecycle events. Manager decisions should be `STRATEGY_ACTION`; worker lifecycle events should represent actual session transitions only.
 
 ### 4.7 UI Gap
 
-Status: **L10 in progress** — React + Tailwind Web UI built in `web/` directory with Vite toolchain. Served as static assets by FastAPI via `StaticFiles(html=True)` mount (guarded by `web/dist/` existence check). All 11 core views implemented: Dashboard, Project Workspace, Graph View, Team Board, Idea Board, Memory Board, Observer Panel, Review Queue, Candidate Flag Panel, Artifact Viewer, Replay Timeline. SSE real-time updates via `useSSE` hook + `SSEContext` provider. Human operations implemented: start/pause/resume project, approve/reject review, add hint. Solver freeze/stop/launch actions show as disabled (API endpoints pending). Dev workflow: Vite dev server proxies `/api` to FastAPI; production uses single port 8000 serving both API and static UI.
+Status: **L10 component complete**.
+
+React + Tailwind Web UI exists in `web/` and builds with Vite. It is served as static assets by FastAPI when `web/dist/` exists. Core views include Dashboard, Project Workspace, Graph View, Team Board, Idea Board, Memory Board, Observer Panel, Review Queue, Candidate Flag Panel, Artifact Viewer, and Replay Timeline. SSE real-time updates are wired through `useSSE` and `SSEContext`.
+
+Some UI operations remain disabled or semantically pending: freeze/stop/launch Solver profile, mark idea valid/invalid, and direct flag approval outside the review flow.
+
+### 4.8 L11 Runtime Stabilization Findings
+
+The 2026-05-14 review found these real-path issues:
+
+1. **P0 launch/session bug**: `SyncScheduler._record_action()` maps `LAUNCH_SOLVER` to `WORKER_ASSIGNED`, creating phantom active sessions before real session creation.
+2. **P0 approved submit loop**: `TeamRuntime._execute_approved_action()` calls `submit_flag()` with the original high risk level, which can create another review instead of submitting.
+3. **P1 pause bug**: `SyncScheduler.run_project()` has a separate pause loop before the real scheduling loop; pause delays execution but does not reliably block it.
+4. **P1 verification-state mismatch**: `SubmissionVerifier` writes `SECURITY_VALIDATION.payload.idea_id`, while `ContextCompiler` reads `candidate_flag_id`.
+5. **P1 ToolBroker path gap**: ToolBroker serves API/request-tool execution, but real solving still goes through `Dispatcher.schedule()` to `WorkerRuntime.run_task()`.
+6. **P1 Observer noise**: Observer is called every cycle; it needs trigger/throttle logic to avoid event spam and feedback noise.
+7. **P2 audit continuity gap**: `TeamRuntime.solve_all()` clears project Blackboard events. Long-term replay/audit should isolate by `run_id` instead of deleting prior events.
+
+These findings are tracked as Phase L11 in `TEAM_EVOLUTION_ROADMAP.md`.
 
 ## 5. Module Responsibility
 
@@ -162,19 +174,19 @@ Status: **L10 in progress** — React + Tailwind Web UI built in `web/` director
 | `factory.py` | Builds `TeamRuntime` plus legacy execution dependencies | Keep public construction boundary |
 | `team/runtime.py` | Main entry and integration shell | Team lifecycle kernel |
 | `team/scheduler.py` | Sync scheduler wrapper | Manager action executor with policy/review/observer gates |
-| `team/manager.py` | Simple stage decision logic | Team control-plane brain |
+| `team/manager.py` | Context-aware stage decision logic | Team control-plane brain |
 | `dispatcher.py` | Real stage and execution orchestration | Legacy solver runner adapter, then per-Solver executor backend |
-| `runtime.py` | Primitive execution | Tool backend behind ToolBroker |
-| `state_graph.py` | Execution state | Per-solver scratchpad during migration |
+| `runtime.py` | Primitive execution still used by Dispatcher | Tool backend behind ToolBroker after real-path migration |
+| `state_graph.py` | Execution-side state | Per-solver scratchpad during migration |
 | `team/blackboard.py` | Event journal/materialized state | Team truth source |
-| `team/context.py` | Context compiler exists | Mandatory context source for Manager/Solver/Observer |
-| `team/policy.py` | Partial action policy | Unified action/tool/review/submission policy |
-| `team/review.py` | Review lifecycle | Execution gate with pause/resume |
-| `team/observer.py` | Mandatory scheduling-loop participant | Produces intervention-level reports consumed by Manager — L7 integrated |
-| `team/merge.py` | Dedup/arbitration helpers | Knowledge merge and route hub with packet pipeline (validate→dedup→arbitrate→route) |
-| `team/tool_broker.py` | All tool execution broker with IOContextProvider | All tool execution broker — policy gate + event journal for all primitives |
-| `team/api.py` | Read-only + review governance REST endpoints + StaticFiles mount for Web UI | Full REST + SSE event stream + project lifecycle + Web UI static asset serving — Blackboard-only data source |
-| `web/` | React + Tailwind Web UI console (Vite build → `web/dist/`) | 11 views consuming L9 API + SSE stream only — operator dashboard, project workspace, review queue, replay timeline |
+| `team/context.py` | Context compiler | Mandatory context source for Manager/Solver/Observer |
+| `team/policy.py` | Action/tool policy | Unified action/tool/review/submission policy |
+| `team/review.py` | Review lifecycle | Execution gate with pause/resume/modify semantics |
+| `team/observer.py` | Scheduling-loop observer | Triggered observer reports consumed by Manager |
+| `team/merge.py` | Knowledge packet merge and routing | Collaboration hub with packet pipeline |
+| `team/tool_broker.py` | Brokered API/tool path with IOContextProvider | All real solve tool execution broker |
+| `team/api.py` | REST/SSE API plus Web UI static mount | Stable product boundary for UI and automation |
+| `web/` | React + Tailwind Web UI console | Operator dashboard, project workspace, review queue, replay timeline |
 
 ## 6. Implementation Doctrine
 
@@ -186,19 +198,36 @@ Future work should proceed by vertical migrations:
 4. Make SolverSession own one continuous solving context.
 5. Add KnowledgePacket and MergeHub routing.
 6. Move real tool execution behind ToolBroker.
-7. Add Observer to the scheduler loop.
+7. Add Observer to the scheduler loop with trigger/throttle semantics.
 8. Build API events and Web UI after runtime semantics stabilize.
+9. Do L11 stabilization before increasing multi-Solver concurrency.
 
-Do not add broad multi-Solver concurrency until memory, idea claim, failure boundary, and sharing semantics are correct.
+Do not add broad multi-Solver concurrency until memory, idea claim, failure boundary, review, and sharing semantics are correct in the real solve path.
 
 ## 7. Verification Expectations
 
-Architecture work should add tests that prove the real path uses the new component. Component-only tests are not enough.
+Architecture work must add tests that prove the real path uses the new component. Component-only tests are not enough.
 
-Examples:
+Required tests:
 
-- A Manager decision test should assert that compiled context changes the action.
-- A review test should assert that an approved action resumes exactly once.
-- A memory test should assert that a failure boundary prevents a repeated action.
-- A collaboration test should assert that a Solver packet reaches another Solver inbox only after MergeHub.
-- A policy test should assert that scheduler actions cannot execute without policy validation.
+- A Manager decision test asserts that compiled context changes the action.
+- A review test asserts that an approved action resumes exactly once.
+- A memory test asserts that a failure boundary prevents a repeated action.
+- A collaboration test asserts that a Solver packet reaches another Solver inbox only after MergeHub.
+- A policy test asserts that scheduler actions cannot execute without policy validation.
+- A launch test asserts that a Manager `LAUNCH_SOLVER` decision does not create a worker session until `SolverSessionManager` creates it.
+- A review-submit test asserts that approving a high-risk submit produces one real submission and no second pending review.
+- A pause test asserts that `pause_project()` prevents scheduling cycles until `resume_project()`.
+- A verification test asserts that evidence-chain validation updates `ManagerContext.verification_state` for the same idea/candidate id used by candidate flags.
+- A ToolBroker path test asserts that the real solve path emits `tool_request` events before WorkerRuntime execution.
+- An Observer test asserts that no-op cycles do not emit unlimited duplicate `OBSERVER_REPORT` events.
+
+Manual verification:
+
+```bash
+python -m unittest discover tests/
+npm.cmd --prefix web run build
+python -m attack_agent team serve --port 8000
+```
+
+On PowerShell, prefer `npm.cmd` if script execution policy blocks `npm.ps1`.

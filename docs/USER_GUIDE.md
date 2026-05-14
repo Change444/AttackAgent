@@ -759,9 +759,26 @@ python -m unittest tests/test_real_primitives.TestRealPrimitives.test_http_post
 
 ## 10. Team Runtime
 
-AttackAgent 提供 Team Runtime 多 Solver 协作平台，支持 CLI、Python API、HTTP API 三种操作面。详细使用说明见 [docs/TEAM_PLATFORM_GUIDE.md](TEAM_PLATFORM_GUIDE.md)。
+AttackAgent 提供 Team Runtime 多 Solver 协作平台。L1-L10 平台组件已经存在，但真实解题路径仍处于 L11 稳定化阶段；当前支持 CLI、Python API、REST API + SSE 事件流、Web UI Console 四种操作面。
 
-快速上手：
+详细使用说明见 [docs/TEAM_PLATFORM_GUIDE.md](TEAM_PLATFORM_GUIDE.md)。
+
+### 10.1 L1-L10 能力栈
+
+| Phase | 能力 | 说明 |
+|-------|------|------|
+| L1 | 事件语义 | IDEA_PROPOSED/CLAIMED/VERIFIED/FAILED, CANDIDATE_FLAG, STRATEGY_ACTION |
+| L2 | Manager 上下文 | 每次决策前编译 ManagerContext（想法、记忆、Solver 状态、政策约束） |
+| L3 | Policy/Review 执行门控 | deny→无记录, needs_review→创建 review+不执行, approve→执行一次 |
+| L4 | 记忆驱动 Solver 连续性 | SolverContextPack, MemoryReducer, 失败边界防止重复尝试 |
+| L5 | SolverSession 生命周期 | created→assigned→running→completed/failed, idea 独占租约 |
+| L6 | KnowledgePacket + MergeHub | 结构化 Solver 协作：validate→dedup→arbitrate→route |
+| L7 | Observer 调度循环 | 干预级别：observe/reminder/steer/throttle/stop_reassign/safety_block |
+| L8 | ToolBroker 实执行路径 | 9 个原语全部 brokered, IO 依赖原语走 IOContextProvider |
+| L9 | REST API + SSE 事件流 | 29 端点 + 实时 SSE 推送 + 项目生命周期 |
+| L10 | Web UI Console | 11 视图 + 人工操作 + SSE 实时更新 |
+
+### 10.2 快速上手
 
 ```bash
 # 安装
@@ -770,7 +787,7 @@ pip install -e ".[team]"
 # CLI 查看项目状态
 python -m attack_agent team status
 
-# 启动 HTTP API
+# 启动 HTTP API（同时提供 Web UI）
 python -m attack_agent team serve --port 8000
 
 # Python API
@@ -780,3 +797,166 @@ project = runtime.run_project("web-auth-easy")
 report = runtime.get_status(project.project_id)
 runtime.close()
 ```
+
+### 10.3 CLI 命令
+
+```bash
+# 项目管理
+python -m attack_agent team run --config config/team_settings.json
+python -m attack_agent team status
+python -m attack_agent team status <project_id>
+
+# 回放
+python -m attack_agent team replay <project_id>
+python -m attack_agent team replay-steps <project_id>
+
+# Review 操作
+python -m attack_agent team reviews
+python -m attack_agent team reviews <project_id>
+python -m attack_agent team review approve <request_id> --project-id <pid> --reason "approved"
+python -m attack_agent team review reject <request_id> --project-id <pid> --reason "rejected"
+python -m attack_agent team review modify <request_id> --project-id <pid> --reason "modified"
+
+# 观察与评估
+python -m attack_agent team observe <project_id>
+python -m attack_agent team evaluate <project_id>
+python -m attack_agent team tools
+
+# API 服务器
+python -m attack_agent team serve --port 8000
+```
+
+---
+
+## 11. Web UI Console
+
+L10 实现的 Web UI 提供 SOC 风格深色主题操作界面，所有数据通过 L9 REST API 和 SSE 事件流获取，不直接访问 Blackboard。
+
+### 11.1 启动
+
+**生产模式**（单端口，API + UI 一体）：
+
+```bash
+cd web && npm install && npm run build   # 构建前端
+python -m attack_agent team serve --port 8000   # 后端自动挂载 web/dist/
+```
+
+浏览器访问：`http://localhost:8000`
+
+**开发模式**（热重载，前后端分离）：
+
+```bash
+# 终端 1：后端
+python -m attack_agent team serve --port 8000
+
+# 终端 2：前端（Vite dev server，/api 代理到 8000）
+cd web && npm install && npm run dev   # http://localhost:5173
+```
+
+浏览器访问：`http://localhost:5173`（推荐开发使用）
+
+### 11.2 11 个核心视图
+
+| 视图 | 路由 | 说明 |
+|------|------|------|
+| Dashboard | `/dashboard` | 项目列表 + 全局统计（Solver 数、想法数、事实数、Review 数、候选 flag） |
+| Project Workspace | `/projects/{id}` | 项目详情 + 生命周期控制 + 标签页（想法/记忆/Solver/Review） |
+| Graph View | `/projects/{id}/graph` | 物化状态：事实节点、想法节点、Solver 节点、Packet 节点 |
+| Team Board | `/projects/{id}/team` | Solver 池 + 状态徽章 + 预算进度条 |
+| Idea Board | `/projects/{id}/ideas` | 想法生命周期列：pending→claimed→testing→verified→failed→shelved |
+| Memory Board | `/projects/{id}/memory` | 记忆条目按类型过滤（fact/credential/endpoint/boundary/hint/session） |
+| Observer Panel | `/projects/{id}/observer` | 观察报告 + 严重级别 + 干预级别徽章 |
+| Review Queue | `/reviews` | 全局 Review 队列 + approve/reject 按钮 + 因果链 |
+| Candidate Flag Panel | `/projects/{id}/flags` | 候选 flag + 证据链 |
+| Artifact Viewer | `/projects/{id}/artifacts` | Artifact 列表 |
+| Replay Timeline | `/projects/{id}/replay` | 步骤回放 + 解释 + 状态快照 |
+
+### 11.3 人工操作
+
+| 操作 | 位置 | API 端点 |
+|------|------|---------|
+| 启动项目 | Dashboard | POST `/api/projects/start-project` |
+| 暂停项目 | Project Workspace 头部 | POST `/api/projects/{id}/pause` |
+| 恢复项目 | Project Workspace 头部 | POST `/api/projects/{id}/resume` |
+| 添加提示 | Project Workspace 头部 | POST `/api/projects/{id}/hint` |
+| 批准 Review | Review Queue / Project Workspace | POST `/api/reviews/{id}/approve` |
+| 拒绝 Review | Review Queue / Project Workspace | POST `/api/reviews/{id}/reject` |
+| 修改 Review | Review Queue（未来） | POST `/api/reviews/{id}/modify` |
+
+### 11.4 SSE 实时更新
+
+Web UI 通过 `useSSE` hook 连接 `/api/events/stream`，侧边栏显示连接状态（Connected / Error / Connecting）。事件到达后视图自动更新，无需手动刷新。
+
+---
+
+## 12. REST API 参考
+
+29 个端点，数据源为 Blackboard，不直接访问内部服务。
+
+### 12.1 项目端点
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/api/projects` | 列出所有项目及状态 |
+| GET | `/api/projects/{id}` | 单项目状态报告 |
+| POST | `/api/projects/start-project` | 启动新项目（challenge_id 参数） |
+| POST | `/api/projects/{id}/pause` | 暂停运行项目 |
+| POST | `/api/projects/{id}/resume` | 恢复暂停项目 |
+| POST | `/api/projects/{id}/hint` | 注入提示 |
+| GET | `/api/projects/{id}/ideas` | 想法条目列表 |
+| GET | `/api/projects/{id}/memory` | 去重事实记忆条目（limit=50） |
+| GET | `/api/projects/{id}/solvers` | Solver 会话列表 |
+| GET | `/api/projects/{id}/reviews` | 待处理 Review 请求 |
+| GET | `/api/projects/{id}/events` | 完整事件回放日志 |
+| GET | `/api/projects/{id}/observe` | 当前观察报告 |
+| GET | `/api/projects/{id}/graph` | 物化状态（事实、想法、Solver、Packet） |
+| GET | `/api/projects/{id}/observer-reports` | 观察报告事件 |
+| GET | `/api/projects/{id}/candidate-flags` | 候选 flag 事件 |
+| GET | `/api/projects/{id}/artifacts` | Artifact 事件 |
+| GET | `/api/projects/{id}/replay-timeline` | 回放 + 人可读解释 |
+| GET | `/api/projects/{id}/replay-steps` | 回放步骤 + 状态快照 |
+| GET | `/api/projects/{id}/metrics` | 运行指标 |
+| GET | `/api/projects/{id}/verify-consistency` | 验证 API 数据与 Blackboard 回放一致 |
+
+### 12.2 Review 端点
+
+| Method | Path | 说明 |
+|--------|------|------|
+| POST | `/api/reviews/{id}/approve` | 批准 Review 请求 |
+| POST | `/api/reviews/{id}/reject` | 拒绝 Review 请求 |
+| POST | `/api/reviews/{id}/modify` | 修改 Review 请求 |
+| GET | `/api/reviews` | 全局 Review 队列（可选 status 过滤） |
+
+### 12.3 Tool & 评估端点
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/api/tools` | 列出可用原语 |
+| GET | `/api/tools/{name}` | 单个原语规格 |
+| POST | `/api/projects/{id}/request-tool` | 为 Solver 请求工具 |
+| POST | `/api/regression` | 运行回归对比 |
+
+### 12.4 SSE 事件流
+
+| Method | Path | 说明 |
+|--------|------|------|
+| GET | `/api/events/stream` | SSE 实时事件流 |
+
+查询参数：`project_id`（可选过滤）、`last_event_id`（恢复断点）。
+
+SSE 事件类型映射：
+
+| EventType | SSE channel |
+|-----------|------------|
+| project_upserted | `project_updated` |
+| worker_assigned / worker_heartbeat / worker_timeout | `solver_updated` |
+| idea_proposed / idea_claimed / idea_verified / idea_failed | `idea_updated` |
+| observation / memory_stored | `memory_added` |
+| observer_report | `observer_reported` |
+| security_validation (pending) | `review_created` |
+| security_validation (decided) | `review_decided` |
+| candidate_flag | `candidate_flag_found` |
+| action_outcome / tool_request | `tool_event` |
+| hint | `hint_added` |
+| knowledge_packet_published | `knowledge_published` |
+| knowledge_packet_merged | `knowledge_merged` |
