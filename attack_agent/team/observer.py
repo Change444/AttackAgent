@@ -47,10 +47,70 @@ class Observer:
 
     L7: Observer produces intervention-level reports consumed by Manager
     scheduling decisions. Observer never directly mutates facts or stops a Solver.
+    L11: should_observe() provides trigger/throttle to avoid event spam.
+    Direct TeamRuntime.observe() requests bypass throttle.
     """
+
+    _TRIGGER_EVENT_THRESHOLD = 5
+    _TRIGGER_FAILURE_THRESHOLD = 3
 
     def __init__(self, blackboard: BlackboardService) -> None:
         self._bb = blackboard
+        self._last_report_event_count: dict[str, int] = {}
+
+    def should_observe(self, project_id: str) -> bool:
+        """L11: check trigger conditions before generating a report.
+
+        Triggers: N new events since last report, consecutive failures,
+        solver timeout, budget anomaly, first observation with meaningful
+        action events. Direct TeamRuntime.observe() bypasses this.
+        """
+        events = self._bb.load_events(project_id)
+        total_events = len(events)
+
+        # First observation: trigger if there are meaningful action events
+        last_count = self._last_report_event_count.get(project_id, 0)
+        new_events = total_events - last_count
+
+        # Trigger: N new events since last report
+        if new_events >= self._TRIGGER_EVENT_THRESHOLD:
+            return True
+
+        # Trigger: first observation when there are meaningful action events
+        if last_count == 0 and total_events >= 2:
+            has_action = any(
+                e.event_type == EventType.STRATEGY_ACTION.value for e in events
+            )
+            if has_action:
+                return True
+
+        # Trigger: consecutive failures
+        consecutive_failures = 0
+        for ev in reversed(events):
+            if ev.event_type == EventType.ACTION_OUTCOME.value:
+                if ev.payload.get("status", "") != "ok":
+                    consecutive_failures += 1
+                else:
+                    break
+            else:
+                break
+        if consecutive_failures >= self._TRIGGER_FAILURE_THRESHOLD:
+            return True
+
+        # Trigger: solver timeout event
+        for ev in reversed(events):
+            if ev.event_type == EventType.WORKER_TIMEOUT.value:
+                return True
+            if ev.event_type == EventType.STRATEGY_ACTION.value:
+                break  # stop searching after a strategy action
+
+        # Trigger: budget anomaly
+        state = self._bb.rebuild_state(project_id)
+        for s in state.sessions:
+            if s.budget_remaining <= 1.0:
+                return True
+
+        return False
 
     def detect_repeated_action(self, project_id: str, threshold: int = 3) -> list[ObservationNote]:
         events = self._bb.load_events(project_id)
@@ -281,5 +341,9 @@ class Observer:
             },
             source="observer",
         )
+
+        # L11: track event count at time of report for should_observe throttle
+        events = self._bb.load_events(project_id)
+        self._last_report_event_count[project_id] = len(events)
 
         return report

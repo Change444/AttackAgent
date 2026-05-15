@@ -279,10 +279,9 @@ class TeamRuntime:
         for pid in project_ids:
             self._controller.ensure_instance(pid)
 
-        # 1b. Clear stale Blackboard data for each project — prevent
-        #     abandoned status from previous runs polluting rebuild_state
+        # 1b. L11: start new run_id for each project instead of clearing events
         for pid in project_ids:
-            self.blackboard.clear_project_events(pid)
+            self.blackboard.start_run(pid)
 
         # 2. Inject challenge data into Blackboard
         for pid in project_ids:
@@ -774,6 +773,15 @@ class TeamRuntime:
                 action = from_dict(StrategyAction, action_payload)
                 self._execute_approved_action(action, project_id, request_id)
 
+        # L11: MODIFIED review — rebuild modified action and execute it
+        if review is not None and decision == HumanDecisionChoice.MODIFIED:
+            action_payload = review.proposed_action_payload
+            if action_payload and hasattr(human_decision, 'modified_params') and human_decision.modified_params:
+                from attack_agent.team.protocol import from_dict
+                modified_payload = {**action_payload, **human_decision.modified_params}
+                action = from_dict(StrategyAction, modified_payload)
+                self._execute_approved_action(action, project_id, request_id)
+
         return review
 
     def _execute_approved_action(
@@ -797,12 +805,8 @@ class TeamRuntime:
 
         # Execute the action if it requires real execution
         if action.action_type == ActionType.SUBMIT_FLAG:
-            if self._state_graph is not None:
-                record = self._state_graph.projects.get(project_id)
-                if record is not None and record.candidate_flags:
-                    dk, candidate = next(iter(record.candidate_flags.items()))
-                    self.submit_flag(project_id, candidate.value,
-                                    idea_id=dk, risk_level=action.risk_level)
+            # L11: approved submit bypasses full submit_flag() pipeline
+            self._execute_approved_submit(action, project_id, review_id)
         elif action.action_type in (ActionType.LAUNCH_SOLVER, ActionType.STEER_SOLVER):
             if self.use_real_executor:
                 # L5: find or create session for this re-execution
@@ -847,18 +851,68 @@ class TeamRuntime:
             causal_ref=review_id,
         )
 
+    def _execute_approved_submit(
+        self, action: StrategyAction, project_id: str, review_id: str,
+    ) -> None:
+        """Execute an approved SUBMIT_FLAG action directly.
+
+        L11: bypasses the full submit_flag() pipeline (verifier/policy/review)
+        since the action was already validated. Records submission event
+        with causal_ref linking back to the review that approved it.
+        """
+        flag_value = action.payload.get("flag_value", "") if hasattr(action, 'payload') and action.payload else ""
+        idea_id = action.payload.get("idea_id", "") if hasattr(action, 'payload') and action.payload else ""
+
+        # Record submission event directly
+        self.blackboard.append_event(
+            project_id=project_id,
+            event_type=EventType.SUBMISSION.value,
+            payload={
+                "flag_value": flag_value,
+                "idea_id": idea_id,
+                "risk_level": action.risk_level,
+                "action_type": "submit_flag",
+            },
+            source="review_executor",
+            causal_ref=review_id,
+        )
+
+        # Submit through Controller + StateGraphService if available
+        if self._state_graph is not None:
+            record = self._state_graph.projects.get(project_id)
+            if record is not None and record.candidate_flags:
+                dk, candidate = next(iter(record.candidate_flags.items()))
+                if self._controller is not None:
+                    self._controller.submit_flag(project_id, candidate.value)
+
+        # After submission, sync DONE state to Blackboard if flag accepted
+        if self._state_graph is not None:
+            record = self._state_graph.projects.get(project_id)
+            if record is not None and record.snapshot.stage.value == "done":
+                self.blackboard.append_event(
+                    project_id=project_id,
+                    event_type=EventType.PROJECT_UPSERTED.value,
+                    payload={
+                        "challenge_id": record.snapshot.challenge.id if record.snapshot.challenge else "",
+                        "status": "done",
+                        "stage": "done",
+                    },
+                    source="review_executor",
+                )
+
     @staticmethod
     def _action_type_to_event_type(action_type: ActionType) -> str:
         from attack_agent.platform_models import EventType as ET
+        # L11: ALL Manager decisions → STRATEGY_ACTION
         mapping = {
-            ActionType.LAUNCH_SOLVER: ET.WORKER_ASSIGNED.value,
-            ActionType.STEER_SOLVER: ET.REQUEUE.value,
-            ActionType.SUBMIT_FLAG: ET.SUBMISSION.value,
+            ActionType.LAUNCH_SOLVER: ET.STRATEGY_ACTION.value,
+            ActionType.STEER_SOLVER: ET.STRATEGY_ACTION.value,
+            ActionType.SUBMIT_FLAG: ET.STRATEGY_ACTION.value,
             ActionType.CONVERGE: ET.STRATEGY_ACTION.value,
-            ActionType.ABANDON: ET.PROJECT_ABANDONED.value,
-            ActionType.STOP_SOLVER: ET.WORKER_TIMEOUT.value,
+            ActionType.ABANDON: ET.STRATEGY_ACTION.value,
+            ActionType.STOP_SOLVER: ET.STRATEGY_ACTION.value,
         }
-        return mapping.get(action_type, ET.REQUEUE.value)
+        return mapping.get(action_type, ET.STRATEGY_ACTION.value)
 
     # -- observation --
 

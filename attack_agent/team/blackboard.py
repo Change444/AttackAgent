@@ -63,13 +63,19 @@ class MaterializedState:
 # ---------------------------------------------------------------------------
 
 class BlackboardService:
-    """Append-only event journal backed by SQLite."""
+    """Append-only event journal backed by SQLite.
+
+    L11: events are isolated by run_id. start_run() creates a new run
+    context; load_events/rebuild_state filter by the latest run_id by
+    default. Historical runs remain queryable via explicit run_id.
+    """
 
     def __init__(self, config: BlackboardConfig | None = None) -> None:
         self.config = config or BlackboardConfig()
         self._db: sqlite3.Connection | None = None
         self._ensure_db()
         self._lock = threading.Lock()
+        self._current_runs: dict[str, str] = {}  # project_id → run_id
 
     # -- lifecycle --
 
@@ -95,8 +101,19 @@ class BlackboardService:
                 payload     TEXT NOT NULL,
                 source      TEXT NOT NULL DEFAULT 'system',
                 timestamp   TEXT NOT NULL,
-                causal_ref  TEXT
+                causal_ref  TEXT,
+                run_id      TEXT DEFAULT NULL
             )
+            """
+        )
+        # L11: schema migration — add run_id column to pre-L11 databases
+        # Must happen before creating the run_id index
+        self._migrate_add_run_id()
+        # L11: run_id isolation index (only after column exists)
+        self._db.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_events_run
+            ON events (project_id, run_id)
             """
         )
         self._db.execute(
@@ -107,6 +124,13 @@ class BlackboardService:
         )
         self._db.commit()
 
+    def _migrate_add_run_id(self) -> None:
+        """Add run_id column to existing events table if it doesn't exist."""
+        try:
+            self._db.execute("SELECT run_id FROM events LIMIT 1")
+        except sqlite3.OperationalError:
+            self._db.execute("ALTER TABLE events ADD COLUMN run_id TEXT DEFAULT NULL")
+
     def clear_project_events(self, project_id: str) -> None:
         """Remove all events for a project — used before fresh run."""
         if self._db is None:
@@ -114,6 +138,38 @@ class BlackboardService:
         with self._lock:
             self._db.execute("DELETE FROM events WHERE project_id = ?", (project_id,))
             self._db.commit()
+
+    # -- L11: run isolation --
+
+    def start_run(self, project_id: str) -> str:
+        """Start a new run for a project, returning the run_id.
+
+        All subsequent append_event calls for this project will
+        carry this run_id. load_events/rebuild_state default to
+        filtering by the latest run_id.
+        """
+        run_id = uuid.uuid4().hex[:12]
+        self._current_runs[project_id] = run_id
+        return run_id
+
+    def get_current_run_id(self, project_id: str) -> str | None:
+        """Return the current run_id for a project, if set."""
+        return self._current_runs.get(project_id)
+
+    def list_runs(self, project_id: str) -> list[str]:
+        """List all run_ids for a project, ordered by first event timestamp."""
+        if self._db is None:
+            return []
+        with self._lock:
+            rows = self._db.execute(
+                """
+                SELECT DISTINCT run_id FROM events
+                WHERE project_id = ? AND run_id IS NOT NULL
+                ORDER BY run_id
+                """,
+                (project_id,),
+            ).fetchall()
+            return [r["run_id"] for r in rows]
 
     # -- write --
 
@@ -132,11 +188,12 @@ class BlackboardService:
             source=source,
             causal_ref=causal_ref,
         )
+        run_id = self._current_runs.get(project_id)
         with self._lock:
             self._db.execute(
                 """
-                INSERT INTO events (event_id, project_id, event_type, payload, source, timestamp, causal_ref)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO events (event_id, project_id, event_type, payload, source, timestamp, causal_ref, run_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     ev.event_id,
@@ -146,6 +203,7 @@ class BlackboardService:
                     ev.source,
                     ev.timestamp,
                     ev.causal_ref,
+                    run_id,
                 ),
             )
             self._db.commit()
@@ -153,15 +211,31 @@ class BlackboardService:
 
     # -- read --
 
-    def load_events(self, project_id: str) -> list[BlackboardEvent]:
+    def load_events(self, project_id: str, run_id: str | None = None) -> list[BlackboardEvent]:
+        """Load events for a project, filtered by run_id.
+
+        If run_id is None, uses the current run_id for the project
+        from _current_runs. If that is also None, loads all events
+        (backward compatibility with pre-L11 data).
+        """
+        effective_run_id = run_id or self._current_runs.get(project_id)
         with self._lock:
-            rows = self._db.execute(
-                """
-                SELECT event_id, project_id, event_type, payload, source, timestamp, causal_ref
-                FROM events WHERE project_id = ? ORDER BY timestamp
-                """,
-                (project_id,),
-            ).fetchall()
+            if effective_run_id is not None:
+                rows = self._db.execute(
+                    """
+                    SELECT event_id, project_id, event_type, payload, source, timestamp, causal_ref
+                    FROM events WHERE project_id = ? AND run_id = ? ORDER BY timestamp
+                    """,
+                    (project_id, effective_run_id),
+                ).fetchall()
+            else:
+                rows = self._db.execute(
+                    """
+                    SELECT event_id, project_id, event_type, payload, source, timestamp, causal_ref
+                    FROM events WHERE project_id = ? ORDER BY timestamp
+                    """,
+                    (project_id,),
+                ).fetchall()
             return [self._row_to_event(r) for r in rows]
 
     def load_events_after(self, project_id: str, after_event_id: str = "") -> list[BlackboardEvent]:
@@ -225,8 +299,8 @@ class BlackboardService:
 
     # -- rebuild --
 
-    def rebuild_state(self, project_id: str) -> MaterializedState:
-        events = self.load_events(project_id)
+    def rebuild_state(self, project_id: str, run_id: str | None = None) -> MaterializedState:
+        events = self.load_events(project_id, run_id)
         state = MaterializedState()
         # Track latest idea state per idea_id — later events override earlier ones.
         idea_index: dict[str, IdeaEntry] = {}

@@ -96,7 +96,7 @@ class TestHardPolicyGate(unittest.TestCase):
         # The action should be recorded in journal (strategy_action event)
         events = self.bb.load_events("p1")
         action_events = [e for e in events
-                         if e.event_type == EventType.WORKER_ASSIGNED.value
+                         if e.event_type == EventType.STRATEGY_ACTION.value
                          and e.payload.get("action_type") == "launch_solver"]
         # Should have exactly 1 recorded action (not double-recorded)
         self.assertEqual(len(action_events), 1)
@@ -133,7 +133,7 @@ class TestHardPolicyGate(unittest.TestCase):
         self.assertEqual(len(result), 1)
         events = self.bb.load_events("p1")
         action_events = [e for e in events
-                         if e.event_type == EventType.REQUEUE.value]
+                         if e.event_type == EventType.STRATEGY_ACTION.value]
         self.assertTrue(len(action_events) >= 1)
 
     def test_review_request_contains_full_action_payload(self):
@@ -171,7 +171,7 @@ class TestHardPolicyGate(unittest.TestCase):
         events = self.bb.load_events("p1")
         # Find the action event
         action_events = [e for e in events
-                         if e.event_type == EventType.WORKER_ASSIGNED.value
+                         if e.event_type == EventType.STRATEGY_ACTION.value
                          and e.payload.get("action_type") == "launch_solver"]
         self.assertTrue(len(action_events) >= 1)
         action_event_id = action_events[0].event_id
@@ -261,7 +261,7 @@ class TestReviewApprovalReExecution(unittest.TestCase):
         # Manually record re-execution (simulating _execute_approved_action)
         self.bb.append_event(
             "p1",
-            EventType.WORKER_ASSIGNED.value,
+            EventType.STRATEGY_ACTION.value,
             to_dict(StrategyAction(
                 action_type=ActionType.LAUNCH_SOLVER,
                 project_id="p1",
@@ -274,7 +274,7 @@ class TestReviewApprovalReExecution(unittest.TestCase):
         events = self.bb.load_events("p1")
         reexec_events = [e for e in events
                          if e.source == "review_executor"
-                         and e.event_type == EventType.WORKER_ASSIGNED.value]
+                         and e.event_type == EventType.STRATEGY_ACTION.value]
         self.assertEqual(len(reexec_events), 1)
         self.assertEqual(reexec_events[0].causal_ref, review_id)
 
@@ -531,7 +531,7 @@ class TestCausalChainInReplay(unittest.TestCase):
 
         # Find action event
         action_events = [e for e in events_after_action
-                         if e.event_type == EventType.WORKER_ASSIGNED.value
+                         if e.event_type == EventType.STRATEGY_ACTION.value
                          and e.payload.get("action_type") == "launch_solver"]
         action_event_id = action_events[0].event_id
 
@@ -558,7 +558,7 @@ class TestCausalChainInReplay(unittest.TestCase):
         # 3. Simulate re-execution (as _execute_approved_action would)
         self.bb.append_event(
             "p1",
-            EventType.WORKER_ASSIGNED.value,
+            EventType.STRATEGY_ACTION.value,
             to_dict(StrategyAction(
                 action_type=ActionType.LAUNCH_SOLVER,
                 project_id="p1",
@@ -594,7 +594,7 @@ class TestCausalChainInReplay(unittest.TestCase):
 
         reexec_events = [e for e in all_events
                          if e.source == "review_executor"
-                         and e.event_type == EventType.WORKER_ASSIGNED.value]
+                         and e.event_type == EventType.STRATEGY_ACTION.value]
         self.assertEqual(len(reexec_events), 1)
         self.assertEqual(reexec_events[0].causal_ref, review_id)
 

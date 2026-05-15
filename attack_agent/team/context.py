@@ -206,7 +206,8 @@ class ContextCompiler:
             if ev.event_type == EventType.SECURITY_VALIDATION.value:
                 p = ev.payload
                 if p.get("check") == "evidence_chain":
-                    idea_id = p.get("candidate_flag_id", "")
+                    # L11: read candidate_flag_id first, fallback to idea_id
+                    idea_id = p.get("candidate_flag_id", "") or p.get("idea_id", "")
                     outcome = p.get("outcome", "")
                     if idea_id and outcome in ("pass", "fail", "warning"):
                         ctx.verification_state[idea_id] = outcome

@@ -130,12 +130,17 @@ class SyncScheduler:
         if project.status in ("done", "abandoned"):
             return []
 
+        # L11: paused projects do not execute scheduling cycles
+        if project.status == "paused":
+            return []
+
         current_stage = _infer_stage(events, project.status)
 
-        # -- L7: invoke Observer before context compilation --
+        # -- L7/L11: invoke Observer with trigger/throttle --
         if observer is not None and state.project is not None:
-            if state.project.status not in ("done", "abandoned"):
-                observer.generate_report(project_id)
+            if state.project.status not in ("done", "abandoned", "paused"):
+                if observer.should_observe(project_id):
+                    observer.generate_report(project_id)
 
         # -- L2: compile ManagerContext when compiler available --
         ctx = None
@@ -412,12 +417,10 @@ class SyncScheduler:
         When paused, blocks on pause_event.wait() until resumed.
         """
         for _ in range(self.config.max_cycles):
-            # -- L9: pause check between cycles --
+            # L11: pause check at start of each cycle
             if pause_event is not None and pause_event.is_set():
-                pause_event.wait(timeout=1.0)
-                if pause_event.is_set():
-                    continue
-        for _ in range(self.config.max_cycles):
+                continue  # paused — skip scheduling
+
             state = blackboard.rebuild_state(project_id)
             if state.project is None:
                 # project hasn't been admitted yet — admit it first
@@ -509,16 +512,21 @@ def _infer_stage(events: list, project_status: str) -> str:
 
     for ev in events:
         et = ev.event_type
-        if et == EventType.WORKER_ASSIGNED.value:
+        # L11: STRATEGY_ACTION events with action_type payload
+        if et == EventType.STRATEGY_ACTION.value:
+            at = ev.payload.get("action_type", "")
+            if at in ("launch_solver", "steer_solver"):
+                has_reason = True
+            if at == "converge":
+                has_convergence_events = True
+        elif et == EventType.WORKER_ASSIGNED.value:
+            # Legacy: worker assigned from SolverSessionManager
             has_reason = True
         if et in (EventType.OBSERVATION.value, EventType.ACTION_OUTCOME.value):
             has_explore = True
         if et == EventType.CANDIDATE_FLAG.value:
             # Only genuine flags count as convergence events
             if is_genuine_candidate_flag(et, ev.payload, ev.source):
-                has_convergence_events = True
-        elif et == EventType.STRATEGY_ACTION.value:
-            if ev.payload.get("action_type") == "converge":
                 has_convergence_events = True
         if et == EventType.PROJECT_ABANDONED.value:
             return "abandoned"
@@ -554,18 +562,22 @@ def _record_action(
 
 
 def _action_to_event_type(action_type: ActionType) -> str:
-    """Map StrategyAction action_type to a Blackboard EventType string."""
+    """Map StrategyAction action_type to a Blackboard EventType string.
+
+    L11: ALL Manager decisions → STRATEGY_ACTION.
+    Only SolverSessionManager writes worker lifecycle events.
+    """
     mapping = {
-        ActionType.LAUNCH_SOLVER: EventType.WORKER_ASSIGNED.value,
-        ActionType.STEER_SOLVER: EventType.REQUEUE.value,
-        ActionType.SUBMIT_FLAG: EventType.SUBMISSION.value,
+        ActionType.LAUNCH_SOLVER: EventType.STRATEGY_ACTION.value,
+        ActionType.STEER_SOLVER: EventType.STRATEGY_ACTION.value,
+        ActionType.SUBMIT_FLAG: EventType.STRATEGY_ACTION.value,
         ActionType.CONVERGE: EventType.STRATEGY_ACTION.value,
-        ActionType.ABANDON: EventType.PROJECT_ABANDONED.value,
-        ActionType.STOP_SOLVER: EventType.WORKER_TIMEOUT.value,
+        ActionType.ABANDON: EventType.STRATEGY_ACTION.value,
+        ActionType.STOP_SOLVER: EventType.STRATEGY_ACTION.value,
         ActionType.THROTTLE_SOLVER: EventType.STRATEGY_ACTION.value,
-        ActionType.REASSIGN_SOLVER: EventType.WORKER_ASSIGNED.value,
+        ActionType.REASSIGN_SOLVER: EventType.STRATEGY_ACTION.value,
     }
-    return mapping.get(action_type, EventType.REQUEUE.value)
+    return mapping.get(action_type, EventType.STRATEGY_ACTION.value)
 
 
 def _execute_submit_if_possible(

@@ -216,6 +216,71 @@ class ToolBroker:
         """Clear accumulated observations for a project+solver pair."""
         self._completed_observations.pop((project_id, solver_id), None)
 
+    def journal_real_execution(
+        self,
+        project_id: str,
+        solver_id: str,
+        primitive_name: str,
+        outcome_status: str = "ok",
+        cost: float = 0.0,
+        failure_reason: str = "",
+    ) -> None:
+        """L11: write retroactive ToolBroker events for real solve path execution.
+
+        Called from schedule_cycle() after _execute_solver_cycle() completes.
+        Writes: TOOL_REQUEST(request_created), SECURITY_VALIDATION(tool_policy_auto_allow),
+        TOOL_REQUEST(completed) — with source_path="real_solve" marker.
+        """
+        request_id = uuid.uuid4().hex[:12]
+
+        # 1. TOOL_REQUEST — request_created
+        self.blackboard.append_event(
+            project_id=project_id,
+            event_type=EventType.TOOL_REQUEST.value,
+            payload={
+                "tool_event": "request_created",
+                "request_id": request_id,
+                "solver_id": solver_id,
+                "primitive_name": primitive_name,
+                "source_path": "real_solve",
+            },
+            source="tool_broker",
+        )
+
+        # 2. SECURITY_VALIDATION — tool_policy_auto_allow
+        self.blackboard.append_event(
+            project_id=project_id,
+            event_type=EventType.SECURITY_VALIDATION.value,
+            payload={
+                "tool_event": "tool_policy_auto_allow",
+                "request_id": request_id,
+                "decision": "allow",
+                "outcome": "pass",
+                "check": "tool_policy_auto_allow",
+                "primitive_name": primitive_name,
+                "solver_id": solver_id,
+                "source_path": "real_solve",
+            },
+            source="tool_broker",
+        )
+
+        # 3. TOOL_REQUEST — completed
+        self.blackboard.append_event(
+            project_id=project_id,
+            event_type=EventType.TOOL_REQUEST.value,
+            payload={
+                "tool_event": "completed",
+                "request_id": request_id,
+                "primitive_name": primitive_name,
+                "solver_id": solver_id,
+                "outcome_status": outcome_status,
+                "cost": cost,
+                "failure_reason": failure_reason,
+                "source_path": "real_solve",
+            },
+            source="tool_broker",
+        )
+
     def list_available_primitives(self, profile: WorkerProfile | str) -> list[str]:
         """List primitives visible to a given worker profile."""
         if isinstance(profile, str):

@@ -94,18 +94,34 @@ class HumanReviewGate:
         review.decided_at = decision.decided_at or datetime.now(timezone.utc).isoformat()
 
         # write resolution event
+        resolution_payload = {
+            "review_id": request_id,
+            "outcome": "review_" + new_status.value,
+            "decision": decision.decision.value,
+            "decided_by": decision.decided_by,
+            "decided_at": review.decided_at,
+            "reason": decision.reason,
+            "status": new_status.value,
+        }
+
+        # L11: MODIFIED — build delta and modified_action_payload
+        if decision.decision == HumanDecisionChoice.MODIFIED and decision.modified_params:
+            original_payload = review.proposed_action_payload or {}
+            modified_payload = {**original_payload, **decision.modified_params}
+            delta_lines = []
+            for key, new_val in decision.modified_params.items():
+                old_val = original_payload.get(key, "<absent>")
+                delta_lines.append(f"{key}: {old_val} → {new_val}")
+            resolution_payload["original_action_payload"] = original_payload
+            resolution_payload["modified_params"] = decision.modified_params
+            resolution_payload["modified_action_payload"] = modified_payload
+            resolution_payload["delta"] = delta_lines
+            review.proposed_action_payload = modified_payload
+
         blackboard.append_event(
             project_id=review.project_id,
             event_type=EventType.SECURITY_VALIDATION.value,
-            payload={
-                "review_id": request_id,
-                "outcome": "review_" + new_status.value,
-                "decision": decision.decision.value,
-                "decided_by": decision.decided_by,
-                "decided_at": review.decided_at,
-                "reason": decision.reason,
-                "status": new_status.value,
-            },
+            payload=resolution_payload,
             source="human_review_gate",
             causal_ref=request_id,
         )

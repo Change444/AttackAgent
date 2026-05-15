@@ -111,6 +111,7 @@ class SubmissionVerifier:
                 "reason": result.reason or "evidence chain verified",
                 "check": "evidence_chain",
                 "idea_id": idea_id,
+                "candidate_flag_id": idea_id,  # L11: write both for compatibility
             },
             source="submission_verifier",
         )
