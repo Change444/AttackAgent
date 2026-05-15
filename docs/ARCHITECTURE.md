@@ -2,7 +2,7 @@
 
 Last updated: 2026-05-14
 
-This document is the current architecture authority. L1-L10 platform components now exist, but the real solve path still has L11 stabilization work before the architecture can be called complete.
+This document is the current architecture authority. L1-L11 platform components now exist, and L11 real-path stabilization is complete. The remaining gaps are: memory must be proven as mandatory Solver input in the real path, multi-Solver collaboration must be proven end-to-end, and ToolBroker must become the sole execution path (not only retroactive journaling).
 
 ## 1. Product Direction
 
@@ -52,7 +52,7 @@ Important facts:
 - `BlackboardService` is durable and queryable, but it is still partly fed by sync from `StateGraphService`.
 - `ContextCompiler`, `PolicyHarness`, `HumanReviewGate`, `MergeHub`, `Observer`, and `SolverSessionManager` exist, but several are not yet proven as required participants in the real solve path.
 - Multi-Solver collaboration is not complete. Default project solver count is still effectively one.
-- Web UI, REST API, and SSE infrastructure exist and build, but runtime semantics still need L11 stabilization.
+- Web UI, REST API, and SSE infrastructure exist and build. Runtime semantics are stabilized via L11.
 
 ## 3. Target Boundary
 
@@ -98,11 +98,9 @@ Final-state invariants:
 
 ### 4.1 Scheduler Gap
 
-Status: **partially resolved, L11 required**.
+Status: **resolved by L11**.
 
-`ContextCompiler.compile_manager_context()` is called before Manager decisions, and StrategyActions pass through `PolicyHarness`. However, action journaling still maps some Manager decisions to execution-state events. In particular, `LAUNCH_SOLVER` is recorded as `WORKER_ASSIGNED`, which can materialize a phantom active SolverSession before `SolverSessionManager.create_and_persist()` creates the real one. With `max_project_solvers=1`, this can block the real launch.
-
-Required invariant: Manager decisions must be recorded as `STRATEGY_ACTION`; only `SolverSessionManager` writes `WORKER_ASSIGNED`, `WORKER_HEARTBEAT`, `WORKER_TIMEOUT`, or terminal worker lifecycle events.
+Manager decisions are now recorded as `STRATEGY_ACTION`. Only `SolverSessionManager` writes `WORKER_ASSIGNED`, `WORKER_HEARTBEAT`, `WORKER_TIMEOUT`, or terminal worker lifecycle events. The phantom-session bug where `LAUNCH_SOLVER` mapped to `WORKER_ASSIGNED` is fixed.
 
 ### 4.2 Memory Gap
 
@@ -110,7 +108,7 @@ Status: **component complete, real-path verification required**.
 
 `SolverContextPack` carries facts, credentials, endpoints, failure boundaries, recent tool outcomes, budget constraints, scratchpad summary, and recent event IDs. `MemoryReducer` extracts structured memory from tool outcomes. The remaining requirement is to prove the real solve path feeds the next Solver turn from this structured context rather than only from legacy Dispatcher/StateGraph state.
 
-`SolverSession` lifecycle models exist and outcome events include `solver_id`, but SolverSession ownership is not complete until Manager decision events and worker lifecycle events are separated.
+SolverSession ownership is now complete: Manager decision events and worker lifecycle events are separated (L11 Fix 1).
 
 ### 4.3 Collaboration Gap
 
@@ -122,28 +120,24 @@ This is not yet equivalent to true multi-Solver teamwork until an end-to-end run
 
 ### 4.4 Observer Gap
 
-Status: **wired, needs throttling**.
+Status: **resolved by L11**.
 
-Observer is a scheduling-loop participant and writes `OBSERVER_REPORT` events. `ContextCompiler` reconstructs full ObserverReport data, and `TeamManager.decide_observer_response()` can produce steer/throttle/stop/reassign/review actions. Observer does not directly mutate facts or stop a Solver.
-
-The current loop should not generate an ObserverReport every cycle by default. It should run on triggers such as N new events, repeated failures, low novelty, solver timeout, budget anomaly, or human request.
+Observer runs in the scheduling loop with trigger/throttle via `should_observe()`. Reports are emitted only when trigger conditions are met (N new events, consecutive failures, solver timeout, budget anomaly) or when the operator explicitly requests observation via `TeamRuntime.observe()`. No-op cycles no longer emit unlimited duplicate `OBSERVER_REPORT` events.
 
 ### 4.5 Review Gap
 
-Status: **partially resolved, L11 required**.
+Status: **resolved by L11**.
 
-`ReviewRequest` persists the proposed action payload and review decisions are journaled. Two gaps remain:
+`ReviewRequest` persists the proposed action payload and review decisions are journaled. Both gaps are now fixed:
 
-- Approved `SUBMIT_FLAG` actions can re-enter the normal high-risk review path instead of executing once.
-- `MODIFIED` decisions are recorded but are not yet rebuilt into a modified executable action.
-
-Approval must execute the approved action exactly once through an approval-aware path.
+- Approved `SUBMIT_FLAG` actions execute once through `_execute_approved_submit()`, which bypasses the full `submit_flag()` pipeline and does not re-enter review creation.
+- `MODIFIED` decisions are rebuilt into a modified executable action payload, merged with `modified_params`, and executed through `_execute_approved_action()` with delta recording.
 
 ### 4.6 Event Semantics Gap
 
-Status: **mostly resolved, with one critical exception**.
+Status: **resolved by L11**.
 
-`IDEA_PROPOSED/CLAIMED/VERIFIED/FAILED`, `CANDIDATE_FLAG`, `SECURITY_VALIDATION`, and `KNOWLEDGE_PACKET_PUBLISHED/MERGED` are separated. The exception is Manager action recording: `LAUNCH_SOLVER`, `REASSIGN_SOLVER`, and some approved actions still map directly to worker lifecycle events. Manager decisions should be `STRATEGY_ACTION`; worker lifecycle events should represent actual session transitions only.
+All Manager decisions are recorded as `STRATEGY_ACTION`. Worker lifecycle events (`WORKER_ASSIGNED`, `WORKER_HEARTBEAT`, `WORKER_TIMEOUT`) are written only by `SolverSessionManager`. Idea, candidate flag, security validation, and knowledge packet event types are properly separated.
 
 ### 4.7 UI Gap
 
@@ -153,19 +147,17 @@ React + Tailwind Web UI exists in `web/` and builds with Vite. It is served as s
 
 Some UI operations remain disabled or semantically pending: freeze/stop/launch Solver profile, mark idea valid/invalid, and direct flag approval outside the review flow.
 
-### 4.8 L11 Runtime Stabilization Findings
+### 4.8 L11 Runtime Stabilization
 
-The 2026-05-14 review found these real-path issues:
+All 8 real-path issues found on 2026-05-14 have been resolved:
 
-1. **P0 launch/session bug**: `SyncScheduler._record_action()` maps `LAUNCH_SOLVER` to `WORKER_ASSIGNED`, creating phantom active sessions before real session creation.
-2. **P0 approved submit loop**: `TeamRuntime._execute_approved_action()` calls `submit_flag()` with the original high risk level, which can create another review instead of submitting.
-3. **P1 pause bug**: `SyncScheduler.run_project()` has a separate pause loop before the real scheduling loop; pause delays execution but does not reliably block it.
-4. **P1 verification-state mismatch**: `SubmissionVerifier` writes `SECURITY_VALIDATION.payload.idea_id`, while `ContextCompiler` reads `candidate_flag_id`.
-5. **P1 ToolBroker path gap**: ToolBroker serves API/request-tool execution, but real solving still goes through `Dispatcher.schedule()` to `WorkerRuntime.run_task()`.
-6. **P1 Observer noise**: Observer is called every cycle; it needs trigger/throttle logic to avoid event spam and feedback noise.
-7. **P2 audit continuity gap**: `TeamRuntime.solve_all()` clears project Blackboard events. Long-term replay/audit should isolate by `run_id` instead of deleting prior events.
-
-These findings are tracked as Phase L11 in `TEAM_EVOLUTION_ROADMAP.md`.
+1. **P0 launch/session bug**: Fixed — `_record_action()` now maps all Manager decisions to `STRATEGY_ACTION`; only `SolverSessionManager` writes worker lifecycle events.
+2. **P0 approved submit loop**: Fixed — `_execute_approved_submit()` bypasses the full pipeline and executes the approved submission once without re-entering review creation.
+3. **P1 pause bug**: Fixed — `run_project()` merged two separate loops into one with pause check at the start of each cycle; `schedule_cycle()` also checks project status.
+4. **P1 verification-state mismatch**: Fixed — `SubmissionVerifier` writes both `idea_id` and `candidate_flag_id`; `ContextCompiler` reads `candidate_flag_id` with `idea_id` fallback.
+5. **P1 ToolBroker path gap**: Fixed — `ToolBroker.journal_real_execution()` writes request/policy/result events for real solve primitive executions retroactively.
+6. **P1 Observer noise**: Fixed — `should_observe()` provides trigger/throttle; scheduler calls `generate_report()` only when triggers are met.
+7. **P2 audit continuity gap**: Fixed — `solve_all()` uses `run_id` isolation via `BlackboardService.start_run()` instead of `clear_project_events()`.
 
 ## 5. Module Responsibility
 

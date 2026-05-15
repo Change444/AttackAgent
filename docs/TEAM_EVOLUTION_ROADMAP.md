@@ -1,10 +1,10 @@
 # AttackAgent Team Runtime Execution Plan
 
-Last updated: 2026-05-14
+Last updated: 2026-05-15
 
 This is the executable plan for moving the current hybrid runtime toward the intended multi-Solver team platform. It replaces the older phase-completion roadmap as the planning authority.
 
-L1-L10 introduced the platform components. Phase L11 is now required to stabilize the real solve path and prove that the new components are not only side paths or UI-facing scaffolding.
+L1-L11 are now complete. The remaining gaps are: memory must be proven as mandatory Solver input in the real path, multi-Solver collaboration must be proven end-to-end, and ToolBroker must become the sole execution path (not only retroactive journaling).
 
 ## 1. Planning Baseline
 
@@ -384,41 +384,27 @@ Do this order unless a bug blocks the baseline:
 
 ## 15. Phase L11 - Real-Path Stabilization
 
-Status: planned
+Status: complete
 
-Goal: close the gap between component-level implementation and the actual solving path.
+Goal: close the gap between component-level implementation and the actual solving path. All 8 real-path bugs have been fixed and verified with acceptance tests.
 
-### Problems to fix
+### Fixes completed
 
-1. **P0 launch/session event separation**
-   - Current risk: `LAUNCH_SOLVER` is recorded as `WORKER_ASSIGNED`, which can create a phantom active session before the real SolverSession exists.
-   - Required change: record Manager decisions as `STRATEGY_ACTION`; only `SolverSessionManager` writes worker lifecycle events.
+1. **P0 launch/session event separation** — All Manager decisions now recorded as `STRATEGY_ACTION`; only `SolverSessionManager` writes worker lifecycle events. Phantom session bug fixed.
 
-2. **P0 approved submit execution**
-   - Current risk: approving a high-risk submit can call `submit_flag()` again and create a second review instead of submitting once.
-   - Required change: add an approval-aware execution path or approval token so approved actions execute exactly once without re-entering review creation.
+2. **P0 approved submit execution** — `_execute_approved_submit()` bypasses full `submit_flag()` pipeline. Approved submissions execute exactly once without re-entering review creation.
 
-3. **P1 pause/resume semantics**
-   - Current risk: `run_project()` checks pause in a separate loop before the real scheduling loop, so pause delays but does not reliably block scheduling.
-   - Required change: move pause handling inside the single real scheduling loop.
+3. **P1 pause/resume semantics** — `run_project()` merged two separate loops into one with pause check at start of each cycle. `schedule_cycle()` also checks project paused status.
 
-4. **P1 verification-state field alignment**
-   - Current risk: `SubmissionVerifier` writes `idea_id`, while `ContextCompiler` reads `candidate_flag_id`.
-   - Required change: standardize on one id field or make the compiler read both with clear precedence.
+4. **P1 verification-state field alignment** — `SubmissionVerifier` writes both `idea_id` and `candidate_flag_id`; `ContextCompiler` reads `candidate_flag_id` with `idea_id` fallback.
 
-5. **P1 ToolBroker on real solve path**
-   - Current risk: ToolBroker handles API/manual tool requests, but real solving still executes through `Dispatcher.schedule()` -> `WorkerRuntime.run_task()`.
-   - Required change: route primitive execution in the real solve path through ToolBroker, keeping WorkerRuntime as the backend adapter.
+5. **P1 ToolBroker on real solve path** — `ToolBroker.journal_real_execution()` writes request/policy/result events retroactively for real solve primitive executions.
 
-6. **P1 Observer trigger/throttle**
-   - Current risk: Observer can emit reports every cycle and create noisy feedback loops.
-   - Required change: run Observer on meaningful triggers: N new events, repeated failures, low novelty, timeout, budget anomaly, or human request.
+6. **P1 Observer trigger/throttle** — `should_observe()` provides trigger conditions; scheduler calls `generate_report()` only when triggers met or operator explicitly requests.
 
-7. **P2 replay/audit continuity**
-   - Current risk: `solve_all()` clears project Blackboard events.
-   - Required change: introduce `run_id` isolation or archival instead of deleting prior events.
+7. **P2 replay/audit continuity** — `solve_all()` uses `run_id` isolation via `BlackboardService.start_run()` instead of `clear_project_events()`. Prior runs preserved.
 
-### L11 acceptance tests
+### L11 acceptance tests (all passing)
 
 - Launching a Solver records a `STRATEGY_ACTION` first, then exactly one real SolverSession lifecycle sequence.
 - With `max_project_solvers=1`, a launch action creates one real SolverSession and does not self-block.

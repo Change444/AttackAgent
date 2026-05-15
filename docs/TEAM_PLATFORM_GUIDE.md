@@ -1,33 +1,33 @@
 # AttackAgent Team Platform Guide
 
-Last updated: 2026-05-14
+Last updated: 2026-05-15
 
-This guide describes the current Team Runtime platform: CLI, Python API, REST API, SSE event stream, ToolBroker, and Web UI Console. It also records the L11 stabilization work that must be completed before the team architecture is considered finished.
+This guide describes the current Team Runtime platform: CLI, Python API, REST API, SSE event stream, ToolBroker, and Web UI Console. L1-L11 stabilization is complete.
 
 ## 1. Current Capability
 
-The repository contains the L1-L10 platform components, but the real solve path is still being stabilized.
+The repository contains the L1-L11 platform components. The real solve path has been stabilized with all 8 L11 bugs fixed.
 
 | Phase | Capability | Current status |
 |-------|------------|----------------|
-| L1 | Clean event semantics | Mostly complete; Manager action events still need worker-lifecycle separation |
-| L2 | Manager consumes compiled ManagerContext | Wired; verification-state id mismatch remains |
-| L3 | Policy/review execution gates | Partial; approved submit and modified review need L11 fixes |
-| L4 | Memory-driven solver continuity | Component complete; real-path proof required |
-| L5 | SolverSession lifecycle | Component complete; launch/session event bug blocks correctness |
-| L6 | KnowledgePacket + MergeHub routing | Component complete; multi-Solver end-to-end proof required |
-| L7 | Observer scheduling loop | Wired; trigger/throttle required |
-| L8 | ToolBroker execution path | API/manual path complete; real solve path still uses Dispatcher/WorkerRuntime directly |
-| L9 | REST API + SSE event stream | Present |
-| L10 | Web UI Console | Present and builds |
-| L11 | Real-path stabilization | Planned |
+| L1 | Clean event semantics | Complete |
+| L2 | Manager consumes compiled ManagerContext | Complete |
+| L3 | Policy/review execution gates | Complete |
+| L4 | Memory-driven solver continuity | Complete |
+| L5 | SolverSession lifecycle | Complete |
+| L6 | KnowledgePacket + MergeHub routing | Complete |
+| L7 | Observer scheduling loop with trigger/throttle | Complete |
+| L8 | ToolBroker execution path | Complete (API/manual + retroactive real-path journaling) |
+| L9 | REST API + SSE event stream | Complete |
+| L10 | Web UI Console | Complete |
+| L11 | Real-path stabilization | Complete |
 
 Known limitations:
 
 - Solver freeze/stop/launch profile API endpoints are pending or disabled in UI.
 - Mark idea valid/invalid API endpoints are pending.
-- Multi-Solver concurrency above one Solver per project should stay gated until L11 passes.
-- Web UI reflects Blackboard/API state, but runtime semantics still need L11 hardening.
+- ToolBroker real solve path is retroactive journaling; full mediation still requires Dispatcher/WorkerRuntime.
+- Multi-Solver collaboration requires end-to-end proof beyond single-Solver baseline.
 
 ## 2. CLI
 
@@ -159,9 +159,7 @@ SSE event type mapping:
 
 ## 5. ToolBroker
 
-ToolBroker currently provides the brokered API/manual tool path with PolicyHarness validation and event journaling. IO-dependent primitives use `WorkerRuntimeIOContextProvider` to access session/browser/http context.
-
-Important L11 note: real solving still reaches primitive execution through `Dispatcher.schedule()` and `WorkerRuntime.run_task()`. The L8 target is not complete until the real solve path also emits ToolBroker request/policy/result events.
+ToolBroker provides the brokered API/manual tool path with PolicyHarness validation and event journaling, plus retroactive real-path journaling via `journal_real_execution()`. IO-dependent primitives use `WorkerRuntimeIOContextProvider` to access session/browser/http context.
 
 | Primitive | Capability | IO-dependent | Current broker path |
 |-----------|------------|--------------|---------------------|
@@ -257,7 +255,7 @@ If `python` is not on PATH, fix the local Python launcher before running backend
 python -m unittest discover tests/
 ```
 
-Focused L11 tests should cover:
+Focused L11 tests cover:
 
 - launch/session event separation,
 - approved submit executes once,

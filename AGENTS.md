@@ -68,7 +68,7 @@ runtime.solve_all()
 - Manager decisions must be `STRATEGY_ACTION`; worker lifecycle events must describe real worker/session transitions only.
 - Keep compatibility with the current test baseline unless a roadmap item explicitly changes the behavior.
 - Prefer small vertical migrations over broad rewrites.
-- Do L11 stabilization before increasing multi-Solver concurrency.
+- L11 stabilization is complete. Do not increase multi-Solver concurrency until memory, idea claim, failure boundary, and sharing semantics are proven in the real solve path.
 - No test method may take over 2 seconds. Full suite must run under 60 seconds. Use `fast_test_config()` with `stdlib` engine and `timeout_seconds <= 0.5`. Do not use `config/settings.json` in tests.
 
 ## Tests
